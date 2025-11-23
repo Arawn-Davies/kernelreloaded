@@ -1,0 +1,3 @@
+[submodule "kernelloader"]
+	path = kernelloader
+	url = https://github.com/rickgaiser/kernelloader

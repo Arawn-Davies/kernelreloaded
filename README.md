@@ -7,3 +7,9 @@ This could then chainload kernelloader.elf, check if elf supports args for cfg p
 
 Further plans are to integrate kernelloader's main functions into ps2bootopia UI, to deliver a unified experience with streamlined booting into Linux (or other *nixes? A build of BSD exists apparently...)  
 
+Once this source is downloaded, enter the following to pull prerequisitie source:  
+
+```
+git submodule init
+git submodule update
+```
