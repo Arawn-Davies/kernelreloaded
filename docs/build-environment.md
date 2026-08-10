@@ -26,9 +26,9 @@ flowchart TD
     IMG --> RUN
     RUN --> OUT
 
-    style IMG fill:#dae8fc,stroke:#6c8ebf
-    style SUB fill:#f5f5f5,stroke:#999
-    style OUT fill:#d5e8d4,stroke:#82b366
+    style IMG fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
+    style SUB fill:#f5f5f5,stroke:#999,color:#1a1a1a
+    style OUT fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
 ```
 
 The submodule is never modified in git — patches are applied to its working

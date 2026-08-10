@@ -11,9 +11,9 @@ and because several point at real bugs rather than portability noise.
 flowchart LR
     A["ppm2rgb<br/>png2rgb"] --> B["hello"] --> C["kernel/<br/>kernel.elf"] --> D["sharedmem/"] --> E["TGE/sbios<br/>sbios_old + new"] --> F["modules/"] --> G["crc32gen"] --> H["loader/<br/>kloader.elf"]
 
-    classDef done fill:#d5e8d4,stroke:#82b366
-    classDef stuck fill:#f8cecc,stroke:#b85450
-    classDef todo fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4
+    classDef done fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    classDef stuck fill:#f8cecc,stroke:#b85450,color:#1a1a1a
+    classDef todo fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4,color:#1a1a1a
     class A,B,C,D,E done
     class F stuck
     class G,H todo

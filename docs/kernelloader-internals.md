@@ -33,14 +33,10 @@ flowchart TD
     LX -->|"all I/O goes through SBIOS"| SB
     SB <-->|SIF| IOP
 
-    style KL fill:#dae8fc,stroke:#6c8ebf
-    style SB fill:#ffe6cc,stroke:#d79b00
-    style VM fill:#d5e8d4,stroke:#82b366
+    style KL fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
+    style SB fill:#ffe6cc,stroke:#d79b00,color:#1a1a1a
+    style VM fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
 ```
-
-Three pieces are easy to confuse — `loader/` is kernelloader itself, `kernel/`
-is a small EE stub it loads, and `vmlinux` is the actual Linux kernel you
-provide. Only the first two are built here.
 
 Three pieces are easy to confuse:
 
@@ -110,10 +106,10 @@ flowchart TD
 
     UI x--x|"never loaded automatically"| X
 
-    style A1 fill:#d5e8d4,stroke:#82b366
-    style A2 fill:#d5e8d4,stroke:#82b366
-    style X fill:#f8cecc,stroke:#b85450
-    style M3 fill:#fff2cc,stroke:#d6b656
+    style A1 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style A2 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style X fill:#f8cecc,stroke:#b85450,color:#1a1a1a
+    style M3 fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
 ```
 
 Solid arrows load automatically; dotted ones need a menu action every boot.
@@ -222,7 +218,7 @@ flowchart LR
     MODS --> LOADER
     CRC --> LOADER
 
-    style LOADER fill:#dae8fc,stroke:#6c8ebf
+    style LOADER fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     style RTE stroke-dasharray: 4 4
 ```
 
