@@ -7,6 +7,22 @@ and because several point at real bugs rather than portability noise.
 
 `patches/README.md` is the summary. This is the long version.
 
+```mermaid
+flowchart LR
+    A["ppm2rgb<br/>png2rgb"] --> B["hello"] --> C["kernel/<br/>kernel.elf"] --> D["sharedmem/"] --> E["TGE/sbios<br/>sbios_old + new"] --> F["modules/"] --> G["crc32gen"] --> H["loader/<br/>kloader.elf"]
+
+    classDef done fill:#d5e8d4,stroke:#82b366
+    classDef stuck fill:#f8cecc,stroke:#b85450
+    classDef todo fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4
+    class A,B,C,D,E done
+    class F stuck
+    class G,H todo
+```
+
+Green builds; red is where it currently stops (ps2sdk fileio struct drift);
+dashed is untouched. `loader/` — the component that actually needs changing —
+is last, because everything before it is embedded into it.
+
 ---
 
 ## Host tools

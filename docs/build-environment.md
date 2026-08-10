@@ -6,6 +6,35 @@ without it.
 
 ---
 
+## How a build fits together
+
+```mermaid
+flowchart TD
+    REPO["ps2bootopia<br/><i>your repo</i>"]
+    SUB["kernelloader/<br/><i>submodule — unmodified upstream</i>"]
+    PATCH["patches/*.patch"]
+    IMG["<b>ps2bootopia:local</b><br/>built from Dockerfile"]
+    BASE["ghcr.io/ps2dev/ps2dev<br/><i>gcc 15, ps2sdk, gsKit</i>"]
+    RUN["docker run<br/>-v repo:/work"]
+    OUT["bin/*.elf"]
+
+    BASE --> IMG
+    REPO --> IMG
+    REPO --> PATCH
+    PATCH -->|"build.sh applies,<br/>idempotently"| SUB
+    SUB --> RUN
+    IMG --> RUN
+    RUN --> OUT
+
+    style IMG fill:#dae8fc,stroke:#6c8ebf
+    style SUB fill:#f5f5f5,stroke:#999
+    style OUT fill:#d5e8d4,stroke:#82b366
+```
+
+The submodule is never modified in git — patches are applied to its working
+tree at build time, so it stays a clean checkout that can be rebased on
+upstream.
+
 ## Base image
 
 ```dockerfile

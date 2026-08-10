@@ -13,15 +13,34 @@ what you need before changing anything.
 
 ## Boot chain
 
+```mermaid
+flowchart TD
+    BOOT["FMCB / wLaunchELF / uLaunchELF"]
+    KL["<b>kloader3.0.elf</b><br/><i>loader/</i>"]
+    CFG["config.txt<br/><i>mc0:kloader/ or cdfs:</i>"]
+    SB["<b>SBIOS</b><br/>TGE (built here)<br/>or RTE (Sony's, Linux Kit disc)"]
+    STUB["<b>kernel.elf</b><br/>EE kernel stub — <i>kernel/</i><br/><i>not Linux</i>"]
+    VM["<b>vmlinux</b> [+ initrd]<br/><i>you supply this</i><br/>mc0: mc1: mass0: cdfs: host:"]
+    LX["Linux running on the EE"]
+    IOP["IOP<br/><i>storage, network, pads</i>"]
+
+    BOOT --> KL
+    KL --> CFG
+    KL --> SB
+    KL --> STUB
+    KL --> VM
+    VM --> LX
+    LX -->|"all I/O goes through SBIOS"| SB
+    SB <-->|SIF| IOP
+
+    style KL fill:#dae8fc,stroke:#6c8ebf
+    style SB fill:#ffe6cc,stroke:#d79b00
+    style VM fill:#d5e8d4,stroke:#82b366
 ```
-FMCB / wLaunchELF / uLaunchELF
-   └─ kloader3.0.elf                     the loader (loader/)
-        ├─ reads config                  mc0:kloader/config.txt or cdfs:config.txt
-        ├─ loads SBIOS                   TGE (built here) or RTE (Sony's, from the Linux Kit disc)
-        ├─ loads kernel.elf              the EE kernel stub (kernel/)
-        └─ loads vmlinux [+ initrd]      from mc0:/mc1:/mass0:/cdfs:/host:
-             └─ Linux runs on the EE, talking to the IOP through SBIOS
-```
+
+Three pieces are easy to confuse — `loader/` is kernelloader itself, `kernel/`
+is a small EE stub it loads, and `vmlinux` is the actual Linux kernel you
+provide. Only the first two are built here.
 
 Three pieces are easy to confuse:
 
@@ -74,6 +93,30 @@ The others are **menu actions only**:
 | Load Config from USB | `mass0:CONFIG.TXT` — **uppercase, at the stick root** |
 | Load NetSurf Config from USB | `mass0:PS2NS/CONFIG.TXT` |
 | Save Config on MC0 | `mc0:kloader/config.txt` |
+
+```mermaid
+flowchart TD
+    S([kernelloader starts]) --> AUTO["one loadConfiguration() call<br/>on configfile = CONFIG_FILE"]
+    AUTO --> A1["<b>mc0:kloader/config.txt</b>"]
+    AUTO --> A2["<b>cdfs:config.txt</b><br/><i>when booting from disc</i>"]
+    A1 --> UI([menu])
+    A2 --> UI
+
+    UI -.->|menu action| M1["Load Config from USB<br/><code>mass0:CONFIG.TXT</code><br/><i>uppercase, stick root</i>"]
+    UI -.->|menu action| M2["Load NetSurf Config from USB<br/><code>mass0:PS2NS/CONFIG.TXT</code>"]
+    UI -.->|"Select Config File →<br/>browse"| M3["<b>any path</b><br/>incl. mc1:kloader/config.txt"]
+
+    X["<b>mc1:kloader/config.txt</b><br/>CONFIG_DIR2 is defined but only<br/>ever used by saveMcIcons()"]
+
+    UI x--x|"never loaded automatically"| X
+
+    style A1 fill:#d5e8d4,stroke:#82b366
+    style A2 fill:#d5e8d4,stroke:#82b366
+    style X fill:#f8cecc,stroke:#b85450
+    style M3 fill:#fff2cc,stroke:#d6b656
+```
+
+Solid arrows load automatically; dotted ones need a menu action every boot.
 
 ### CONFIG_DIR2 is a trap
 
@@ -149,6 +192,42 @@ each card in turn.
 ---
 
 ## Build components
+
+```mermaid
+flowchart LR
+    subgraph HOST["host binaries"]
+        PPM["ppm2rgb"]
+        PNG["png2rgb"]
+    end
+    subgraph EE["EE side"]
+        HELLO["hello<br/><i>example payload</i>"]
+        KERN["kernel/<br/><b>kernel.elf</b>"]
+        TGE["TGE/sbios<br/><b>sbios_old.elf</b><br/><b>sbios_new.elf</b>"]
+        RTE["RTE/<br/><i>skipped unless the Sony<br/>Linux Kit disc is present</i>"]
+    end
+    subgraph IOPS["IOP modules"]
+        SHM["sharedmem/"]
+        MODS["modules/"]
+    end
+    CRC["crc32gen"]
+    LOADER["<b>loader/</b><br/>kloader.elf"]
+
+    PPM --> LOADER
+    PNG --> LOADER
+    HELLO --> KERN
+    KERN --> LOADER
+    TGE --> LOADER
+    RTE -.-> LOADER
+    SHM --> LOADER
+    MODS --> LOADER
+    CRC --> LOADER
+
+    style LOADER fill:#dae8fc,stroke:#6c8ebf
+    style RTE stroke-dasharray: 4 4
+```
+
+`loader/` embeds everything above as binary blobs via `bin2s`, which is why it
+builds last and why almost everything else is a prerequisite for it.
 
 The top-level `Makefile` builds, in order:
 
