@@ -1,0 +1,63 @@
+# Dockerized PlayStation 2 build environment for kernelloader / ps2bootopia.
+#
+# The upstream ps2dev image ships the full PS2 cross-toolchain
+# (mips64r5900el-ps2-elf-gcc, ps2sdk, gsKit) with PS2DEV/PS2SDK/PATH already
+# set -- but it is a minimal Alpine image with no `make`, and kernelloader
+# needs rather more than that. Everything below exists because the build
+# fails without it; see docs/ for the full porting notes.
+#
+# Build with ./build.sh (see that script), which mounts the repo at /work.
+FROM ghcr.io/ps2dev/ps2dev:latest
+
+# make/bash: absent from the base image (same as ps2oom).
+# gcc/musl-dev: kernelloader builds HOST tools (ppm2rgb, png2rgb) as well as
+#   EE code, so it needs a native compiler too.
+# libpng/zlib/tiff -dev: png2rgb links libpng; the loader pulls tiff and zlib.
+RUN apk add --no-cache make bash gcc musl-dev libpng-dev zlib-dev tiff-dev
+
+# kernel/Makefile (and others) hardcode the old ee-* tool names. Modern ps2sdk
+# renamed everything to the mips64r5900el-ps2-elf-* triple, so alias them
+# rather than patching every Makefile.
+RUN for f in /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-*; do \
+        b=$(basename "$f"); \
+        ln -sf "$f" "/usr/local/bin/ee-${b#mips64r5900el-ps2-elf-}"; \
+    done
+
+# IOP modules (sharedmem/, modules/) do:
+#     include $(PS2SDKSRC)/Defs.make
+#     include $(PS2SDKSRC)/iop/Rules.make
+#
+# The INSTALLED SDK tree has Defs.make but not iop/Rules.make -- the build rules
+# ship only in the ps2sdk *source* repo (iop/ there has Rules.make,
+# Rules.bin.make, Rules.lib.make, Rules.release; the installed iop/ has just
+# include/ irx/ lib/ startup/). So a source checkout is genuinely required.
+#
+# Not pinned: the installed SDK carries no commit marker to match against, and
+# these rule files change rarely. If IOP modules start failing oddly after a
+# rebuild, an upstream drift here is the first thing to suspect.
+RUN apk add --no-cache git \
+ && git clone --depth 1 https://github.com/ps2dev/ps2sdk.git /usr/local/src/ps2sdk
+ENV PS2SDKSRC=/usr/local/src/ps2sdk
+
+# The source tree keeps IOP headers per-module (iop/system/threadman/include/
+# thbase.h) because ps2sdk expects modules to be built inside it and to declare
+# IOP_IMPORT_INCS. Out-of-tree modules like kernelloader's sharedmem/ don't,
+# so they miss headers the INSTALLED sdk provides flattened in iop/include/.
+#
+# iop/Rules.make line 24 reads "IOP_INCS := $(IOP_INCS) ...", i.e. it prepends
+# whatever we pass in -- so pointing at the flattened installed headers fixes
+# every such module at once, with no change to upstream Makefiles.
+ENV IOP_INCS="-I/usr/local/ps2dev/ps2sdk/iop/include"
+
+# iop/Rules.make sets "IOP_WARNFLAGS ?= -Wall -Werror", so the environment wins.
+# 2003-era IOP modules assign freely between u8*/char* and friends; gcc grew
+# -Wpointer-sign since, and -Werror turns each into a build failure. Suppress
+# just that one warning and keep -Werror for everything else.
+ENV IOP_WARNFLAGS="-Wall -Werror -Wno-pointer-sign"
+
+# tools/bin2s replaces the bin2s that modern ps2sdk dropped (it ships bin2c,
+# which has a different interface). It comes from the mounted repo so edits
+# take effect without rebuilding this image.
+ENV PATH="/work/tools:${PATH}"
+
+WORKDIR /work
