@@ -52,6 +52,14 @@ directly on the EE and calls SBIOS for I/O. Two implementations exist:
 - **TGE** ("The Great Experiment", Marcus R. Brown) — built from source in this
   repository, produces `sbios_old.elf` and `sbios_new.elf` for old and new ROM
   module sets. This is the default.
+
+  Note that kernelloader's TGE is **heavily extended**, not a copy. The
+  original ([ps2homebrew/TGE](https://github.com/ps2homebrew/TGE), last real
+  commit 2004) ships 12 files in `sbios/` — essentially core, misc, sbios,
+  sifcmd and sifdma. kernelloader's has **30**, adding memory card, CDVD, pad,
+  sound, fileio, iopheap, smod and its own string routines. When judging whether
+  something in `TGE/` is an upstream bug or a kernelloader one, check whether
+  the file exists upstream at all.
 - **RTE** (Sony's Run Time Environment) — lives on disc 1 of the official
   PlayStation 2 Linux Kit. The top-level Makefile only builds `RTE/` if
   `$(PS2LINUXDVD)/pbpx_955.09` exists. Some functionality (sound, some DMA) is
