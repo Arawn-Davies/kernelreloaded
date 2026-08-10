@@ -56,3 +56,7 @@ dkms.conf
 
 # Build output — repo-local so it is the same path on any host
 bin/
+# Windows Zone.Identifier streams and source artwork
+*:Zone.Identifier
+clouds.png
+"ChatGPT Image*"
