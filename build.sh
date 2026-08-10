@@ -56,6 +56,25 @@ apply_patches() {
 echo "==> Patches"
 apply_patches
 
+# Custom UI artwork lives in assets/ rather than in the submodule, so the
+# kernelloader checkout stays clean and the patch stays free of binary blobs.
+# png2rgb converts these at build time; see docs/assets.md for the specs.
+copy_assets() {
+    local a
+    for a in "${HERE}"/assets/*.png; do
+        [ -e "$a" ] || continue
+        if ! cmp -s "$a" "${SRC}/loader/$(basename "$a")"; then
+            cp -f "$a" "${SRC}/loader/"
+            echo "    [+] $(basename "$a")"
+        else
+            echo "    [=] $(basename "$a") unchanged"
+        fi
+    done
+}
+
+echo "==> Assets"
+copy_assets
+
 # Build the toolchain image once. Docker caches it unless the Dockerfile
 # changes, so this is a no-op on subsequent runs.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1 || [ "${REBUILD_IMAGE:-0}" = "1" ]; then
