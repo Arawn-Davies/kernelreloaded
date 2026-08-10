@@ -14,14 +14,13 @@ flowchart LR
     classDef done fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     classDef stuck fill:#f8cecc,stroke:#b85450,color:#1a1a1a
     classDef todo fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4,color:#1a1a1a
-    class A,B,C,D,E done
-    class F stuck
-    class G,H todo
+    class A,B,C,D,E,F,G done
+    class H stuck
 ```
 
-Green builds; red is where it currently stops (ps2sdk fileio struct drift);
-dashed is untouched. `loader/` — the component that actually needs changing —
-is last, because everything before it is embedded into it.
+Green builds. `loader/` — the component that actually needs changing — is last,
+because everything before it is embedded into it; it now compiles and shows
+genuine porting work rather than the STLport wall.
 
 ---
 
@@ -328,16 +327,75 @@ stands.
 
 ---
 
-## Still ahead
+---
 
-`crc32gen`, then `loader/` — the largest component. `loader/Makefile` links
-`-lstlport`, and **STLport is no longer shipped** by ps2sdk or `ps2sdk-ports`.
-The dependency is shallow (exactly one `#include <vector>`, nine uses of
-`vector<`, in a tree that is 18 `.c` files to 6 `.cpp`), so dropping STLport for
-the toolchain's own `<vector>` — or a small hand-rolled dynamic array — looks
-tractable. gsKit has had nine years of drift on top, and that is the larger
-unknown.
+## `modules/` — cleared
+
+### `request for member 'stat' in something not a structure or union`
+
+`fio_dirent_t` is the old SDK's name and exists nowhere in current ps2sdk. The
+`stat` errors cascade from that unknown type. Modern `io_common.h` defines an
+identically-shaped `io_dirent_t`:
+
+```c
+typedef struct { io_stat_t stat; char name[256]; void *privdata; } io_dirent_t;
+```
+
+### 18 more cast-as-lvalues, and a trap worth knowing
+
+`SMSCDVD.c` steps through a disc TOC cache with
+`(char *) tocEntryPointer += tocEntryPointer->m_Length`.
+
+The mechanical rewrite is **wrong** unless the RHS is parenthesised:
+
+```c
+/* WRONG — the cast binds tighter than +, so n is scaled by
+   sizeof(struct dirTocEntry) instead of counting bytes */
+p = (struct dirTocEntry *)cache + n;
+
+/* right */
+p = (struct dirTocEntry *)(cache + n);
+```
+
+The first version compiles cleanly and silently corrupts pointer arithmetic in
+disc-cache code. This port made exactly that mistake on the first pass and
+caught it on inspection, not from any diagnostic.
+
+### `-Werror` dropped for IOP modules
+
+Four warning classes broke the build in a row — `-Wpointer-sign`,
+`-Wunused-but-set-variable`, `-Wattributes` (`packed` on a `char` field, a
+genuine no-op), `-Wunused-variable`. Adding a `-Wno-` for each is whack-a-mole
+that also risks masking a real one, so `IOP_WARNFLAGS` is now just `-Wall`:
+every warning still prints, none halts the build.
+
+The EE side is treated differently — `TGE/sbios` keeps `-Werror` with narrow,
+targeted suppressions, because that is where the genuine out-of-bounds bug in
+`mc.c` surfaced.
+
+---
+
+## `loader/` — where it stops now
+
+`-Werror` had to go here too, and for a telling reason: with `-W` (`-Wextra`)
+it fails inside **ps2sdk's own headers**. `rom0_info.h` and `osd_config.h` trip
+`-Wunused-parameter` about twenty times before any kernelloader source is
+reached. `-Werror-implicit-function-declaration` is kept.
+
+Remaining, all genuine:
+
+- **Missing `<stdlib.h>`/`<malloc.h>`** — `memalign`, `free`, `realloc`, `atoi`
+  are all implicitly declared.
+- **`fioExit()`** — a removed ps2sdk fileio API; needs a modern equivalent
+  rather than a flag.
+- **Three incompatible-pointer-type call sites** — `disableSBIOSCalls`,
+  `load_file`, and an `int`-to-`char *` assignment. These need reading, not
+  suppressing.
+- **`loader/stdint.h` collides with newlib's** `sys/_stdint.h`, giving
+  conflicting `int32_t`/`uint32_t`/`int64_t`/`uint64_t`. Some files include
+  `"stdint.h"` and others `<stdint.h>` while `-I.` is in effect, so which one
+  wins varies by file. Pre-existing; only visible now that newlib defines these
+  types itself.
 
 Worth remembering: the change this port exists to enable — a `mc0:`/`mc1:`
-config search — lives **entirely in `loader/`**. Everything built so far is
-prerequisite to linking it.
+config search — lives **entirely in `loader/`**.

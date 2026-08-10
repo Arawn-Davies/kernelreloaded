@@ -130,16 +130,27 @@ It **prepends** whatever is already in `IOP_INCS`, so pointing at the flattened
 installed headers fixes every such module at once without touching a single
 upstream Makefile.
 
-### `IOP_WARNFLAGS` — suppressing one warning globally
+### `IOP_WARNFLAGS` — dropping `-Werror` for IOP modules
 
 ```dockerfile
-ENV IOP_WARNFLAGS="-Wall -Werror -Wno-pointer-sign"
+ENV IOP_WARNFLAGS="-Wall"
 ```
 
 `iop/Rules.make:34` is `IOP_WARNFLAGS ?= -Wall -Werror` — the `?=` means the
-environment wins. 2003-era IOP code assigns freely between `u8*`/`char*` and
-similar; gcc grew `-Wpointer-sign` since, and `-Werror` turns each into a build
-failure. This keeps `-Werror` for everything else.
+environment wins.
+
+`-Werror` is dropped rather than suppressed warning-by-warning. gcc has grown a
+lot of diagnostics since 2003 and this code trips a new class every few files:
+`-Wpointer-sign`, `-Wunused-but-set-variable`, `-Wattributes` (`packed` on a
+`char` field, which really is a no-op), `-Wunused-variable`. Chasing each with
+its own `-Wno-` is whack-a-mole, and every added suppression is a chance to
+mask something real.
+
+`-Wall` is kept, so warnings still print on every build and stay reviewable.
+
+Note the EE side is deliberately different: `TGE/sbios` keeps `-Werror` with
+narrow, targeted suppressions, because that is exactly where a genuine
+out-of-bounds bug surfaced (`mc.c`, see `patches/README.md`).
 
 ### `tools/bin2s` on PATH
 

@@ -1,7 +1,7 @@
 # ps2bootopia
 
 Kernelloader-based PS2 Linux bootloader, plus a reproducible modern-toolchain
-build environment for [kernelloader](https://github.com/rickgaiser/kernelloader).
+build environment for [kernelloader](https://github.com/citronalco/kernelloader).
 
 ## Why this exists
 
@@ -52,7 +52,26 @@ build. Hence the toolchain work.
 | [`docs/kernelloader-internals.md`](docs/kernelloader-internals.md) | Boot chain, SBIOS vs kernel stub vs vmlinux, the config system in full (search order, all keys, device prefixes, the `CONFIG_DIR2` trap), build components, the SBIOS memory budget, `config.mk` switches |
 | [`docs/build-environment.md`](docs/build-environment.md) | Every Dockerfile layer and why it exists; how ps2sdk's `Rules.make` behaves out-of-tree; the `IOP_INCS` / `IOP_WARNFLAGS` / `PS2SDKSRC` hooks; `build.sh` usage; the stale-object trap |
 | [`docs/porting-notes.md`](docs/porting-notes.md) | Every build failure in order, with the actual error and root cause — including the two real bugs gcc 15 uncovered |
-| [`patches/README.md`](patches/README.md) | Summary of the 16 patched files, grouped by cause |
+| [`patches/README.md`](patches/README.md) | Summary of the 18 patched files, grouped by cause |
+
+## Which kernelloader?
+
+The submodule tracks **[citronalco/kernelloader](https://github.com/citronalco/kernelloader)**,
+not rickgaiser's.
+
+Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
+issues, not archived — just abandoned. Of its seven forks, only citronalco's has
+real work: five commits from 2018–2020, including
+`loader: fix std & stlport related compilation errors` and a libpng port of
+`png2rgb`.
+
+That STLport fix matters. `loader/Makefile` linked `-lstlport`, and modern
+ps2sdk no longer ships STLport at all; the fix drops the library and adds `std::`
+to nine `vector<` uses, since `-D_STLP_NO_NAMESPACES` had put STLport's `vector`
+in the global namespace. Without it, `loader/` cannot link.
+
+Pleasingly, citronalco is also the author of the 2010 ps2dev.org thread on
+booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 
 ## Build
 
@@ -97,11 +116,13 @@ The last two are worth noting: both are environment-level hooks that fix
 ## Status
 
 Building: `ppm2rgb`, `png2rgb`, `hello`, `kernel/kernel.elf`, `sharedmem`,
-`TGE/sbios` (`sbios_old.elf` + `sbios_new.elf`).
+`TGE/sbios` (both variants), `modules/`, `crc32gen`.
 
-Not yet: `modules/` (ps2sdk fileio structs changed shape), then `crc32gen` and
-`loader/` — the largest component, still linking STLport (which modern ps2sdk
-no longer ships) with nine years of gsKit drift on top.
+`loader/` is reached and compiling. STLport is no longer the blocker; what
+remains is ordinary porting work — missing `<stdlib.h>`/`<malloc.h>`
+declarations, the removed `fioExit()` API, three incompatible-pointer-type call
+sites, and `loader/stdint.h` colliding with newlib's. See
+[`docs/porting-notes.md`](docs/porting-notes.md).
 
 One fix carries a caveat, though a smaller one than it first looked:
 `sif1_dmatags` alignment was reduced 64 → 16, because gcc 15 will not express
