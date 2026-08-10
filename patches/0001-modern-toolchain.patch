@@ -1169,7 +1169,7 @@ index 498a77a..f4301c5 100644
  #else
  typedef signed long long int64_t;
 diff --git a/loader/Makefile b/loader/Makefile
-index 19b6af1..e8c74c9 100644
+index 19b6af1..69518ba 100644
 --- a/loader/Makefile
 +++ b/loader/Makefile
 @@ -52,7 +52,12 @@ EE_FLAGS += $(shell if [ -e "$(PS2LINUXDVD)/pbpx_955.09" ]; then echo -DRTE; fi)
@@ -1186,6 +1186,55 @@ index 19b6af1..e8c74c9 100644
  
  EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
  
+@@ -92,7 +97,7 @@ RGB_FILES = \
+ 	selected.rgb \
+ 	unselected.rgb \
+ 	disc.rgb \
+-	cloud.rgb
++	starfield.rgb
+ 
+ RGB_HEADERS = \
+ 	$(subst .rgb,.h, $(RGB_FILES))
+diff --git a/loader/graphic.cpp b/loader/graphic.cpp
+index 00908f2..0728e66 100644
+--- a/loader/graphic.cpp
++++ b/loader/graphic.cpp
+@@ -106,7 +106,7 @@ static GSTEXTURE *texPenguin = NULL;
+ 
+ static GSTEXTURE *texDisc = NULL;
+ 
+-static GSTEXTURE *texCloud = NULL;
++static GSTEXTURE *texStarfield = NULL;
+ 
+ static int reservedEndOfDisplayY = 42;
+ 
+@@ -379,7 +379,7 @@ void graphic_common(void)
+ 	gsKit_clear(gsGlobal, Blue);
+ 
+ 	/* Paint background. */
+-	paintTexture(texCloud, xoffset + 0, yoffset + 0, 0);
++	paintTexture(texStarfield, xoffset + 0, yoffset + 0, 0);
+ 
+ 	paintTexture(texPenguin, xoffset + 5, yoffset + 10, 1);
+ 
+@@ -728,7 +728,7 @@ Menu *graphic_main(void)
+ 	texUnselected = getTexture("unselected.rgb");
+ 	texPenguin = getTexture("penguin.rgb");
+ 	texDisc = getTexture("disc.rgb");
+-	texCloud = getTexture("cloud.rgb");
++	texStarfield = getTexture("starfield.rgb");
+ 
+ 	mainMenu = menu = new Menu(gsGlobal, gsFont, numberOfMenuItems);
+ 	menu->setPosition(50, 120);
+@@ -1135,7 +1135,7 @@ extern "C" {
+ 		reallocTexture(texUnselected);
+ 		reallocTexture(texPenguin);
+ 		reallocTexture(texDisc);
+-		reallocTexture(texCloud);
++		reallocTexture(texStarfield);
+ 
+ 		if (mainMenu != NULL) {
+ 			mainMenu->reset(gsGlobal, gsFont, numberOfMenuItems);
 diff --git a/loader/gs.h b/loader/gs.h
 index 5f76a86..9ed5099 100644
 --- a/loader/gs.h
