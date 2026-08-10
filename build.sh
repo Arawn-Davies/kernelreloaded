@@ -19,7 +19,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${PS2BOOTOPIA_IMAGE:-ps2bootopia:local}"
+IMAGE="${KERNELRELOADED_IMAGE:-kernelreloaded:local}"
 SRC="kernelloader"
 BIN="${HERE}/bin"
 

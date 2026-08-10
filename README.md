@@ -1,13 +1,16 @@
-# ps2bootopia
+# kernelreloaded
 
-Kernelloader-based PS2 Linux bootloader, plus a reproducible modern-toolchain
-build environment for [kernelloader](https://github.com/citronalco/kernelloader).
+**A continuation of [kernelloader](https://github.com/citronalco/kernelloader),
+the PlayStation 2 Linux bootloader** — building again on a modern toolchain.
+
+<sub>Looking for <i>kernelloader ps2 build</i>, <i>kernelloader modern
+toolchain</i>, or <i>ps2 linux bootloader</i>? You're in the right place.</sub>
 
 ## Why this exists
 
-kernelloader 3.0 is the standard way to boot Linux on a PlayStation 2. It is
-also from 2012, last touched against a 2017-era ps2sdk, and does not build with
-a current toolchain. This repository provides:
+kernelloader is the standard way to boot Linux on a PlayStation 2. Release 3.0
+dates from May 2014, upstream's last commit was **March 2017**, and it does not
+build against a current toolchain. This repository provides:
 
 - a **Docker build environment** that compiles it with today's ps2dev image
   (gcc 15, modern ps2sdk, gsKit)
@@ -137,7 +140,7 @@ design it shipped with. Flagged in-code and in
 
 - Get `loader/` building; land the `mc0:`/`mc1:` config search
 - Refreshed GUI configurator for kernelloader
-- Longer term, fold kernelloader's functions into a unified ps2bootopia UI —
+- Longer term, fold kernelloader's functions into a unified kernelreloaded UI —
   booting Linux, and possibly other \*nixes (a BSD build reportedly exists)
 
 ## Credits
