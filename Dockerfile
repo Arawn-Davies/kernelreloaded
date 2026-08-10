@@ -50,10 +50,19 @@ ENV PS2SDKSRC=/usr/local/src/ps2sdk
 ENV IOP_INCS="-I/usr/local/ps2dev/ps2sdk/iop/include"
 
 # iop/Rules.make sets "IOP_WARNFLAGS ?= -Wall -Werror", so the environment wins.
-# 2003-era IOP modules assign freely between u8*/char* and friends; gcc grew
-# -Wpointer-sign since, and -Werror turns each into a build failure. Suppress
-# just that one warning and keep -Werror for everything else.
-ENV IOP_WARNFLAGS="-Wall -Werror -Wno-pointer-sign"
+#
+# -Werror is dropped rather than suppressed warning-by-warning. gcc has grown a
+# lot of diagnostics since 2003, and this code trips a new class every few
+# files: -Wpointer-sign, -Wunused-but-set-variable, -Wattributes (packed on a
+# char field, which is a genuine no-op), -Wunused-variable. Chasing each with a
+# -Wno- flag is whack-a-mole that also risks masking a real one.
+#
+# -Wall is kept, so every warning still prints on every build and stays
+# reviewable — they simply no longer halt it. Note the EE side is treated
+# differently: TGE/sbios keeps -Werror, with narrowly targeted suppressions,
+# because that is where a genuine out-of-bounds bug surfaced (see
+# patches/README.md on mc.c).
+ENV IOP_WARNFLAGS="-Wall"
 
 # tools/bin2s replaces the bin2s that modern ps2sdk dropped (it ships bin2c,
 # which has a different interface). It comes from the mounted repo so edits

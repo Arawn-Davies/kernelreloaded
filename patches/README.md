@@ -9,7 +9,7 @@ anywhere but this repository.
 
 | Patch | Base commit | Files |
 |---|---|---|
-| `0001-modern-toolchain.patch` | `ce0fb430` (rickgaiser/kernelloader master) | 16 |
+| `0001-modern-toolchain.patch` | `d4b88dd` (citronalco/kernelloader master) | 18 |
 
 If a patch stops applying, the submodule has moved off that base commit. Either
 reset the submodule to it, or rebase the patch onto the new upstream.
@@ -19,6 +19,15 @@ reset the submodule to it, or rebase the patch onto the new upstream.
 kernelloader was last built against a 2010-era toolchain. The current ps2dev
 image is gcc 15 with a modern ps2sdk, and essentially none of the drift is
 kernelloader's fault. Grouped by cause:
+
+> **Base note.** The submodule tracks
+> [citronalco/kernelloader](https://github.com/citronalco/kernelloader), not
+> rickgaiser's. Upstream's last commit is 2017-03-01; citronalco carries five
+> further commits (2018–2020) including `loader: fix std & stlport related
+> compilation errors` and a libpng port of `png2rgb`. Basing on it removed
+> `png2rgb` from this patch entirely — an independent fix that turned out to
+> match citronalco's almost line for line — and supplies the STLport fix that
+> `loader/` needs.
 
 ### The 64-bit type bug (the important one)
 
@@ -80,11 +89,35 @@ This is a correctness fix, not a portability tweak.
   grow, the PS2 model-number string sits at the end). The Makefile already
   applied `-Os` to the `new` variant for the same reason.
 
+### IOP modules (`modules/SMSCDVD`)
+
+- `fio_dirent_t` → `io_dirent_t`. The old SDK's name for the same struct;
+  modern `common/include/io_common.h` defines it with an identical shape
+  (`io_stat_t stat; char name[256]; void *privdata;`). `fio_dirent_t` exists
+  nowhere in current ps2sdk, and the "request for member 'stat' in something
+  not a structure" errors were cascading from that unknown type.
+- **18 cast-as-lvalue assignments** on `struct dirTocEntry *`, same removed GNU
+  extension as `sifrpc.c`. Note the trap: the RHS **must** be parenthesised.
+  `p = (struct dirTocEntry *)cache + n` silently scales `n` by
+  `sizeof(struct dirTocEntry)`, where the original `(char *)p = cache + n` did
+  byte arithmetic. The patch uses
+  `p = (struct dirTocEntry *)(cache + n)` throughout.
+
+### `loader/`
+
+- `-Werror` disabled. With `-W` (`-Wextra`) it fails inside **ps2sdk's own
+  headers** — `rom0_info.h` and `osd_config.h` trip `-Wunused-parameter` about
+  twenty times before any kernelloader source is reached.
+  `-Werror-implicit-function-declaration` is kept, since that catches genuine
+  missing-header bugs.
+
 ### Removed language extensions and APIs
 
-- `png2rgb/png2rgb.c`: ported to the libpng 1.6 accessor API. `png_info`
-  became opaque in 1.5, and `png_infopp_NULL`/`png_voidp_NULL` were removed.
-  Also adds `<string.h>` for `memset`.
+- `png2rgb/png2rgb.c`: **no longer in this patch.** libpng made `png_info`
+  opaque in 1.5 and dropped `png_infopp_NULL`/`png_voidp_NULL` in 1.6, so this
+  needed porting to the accessor API — but citronalco already did it upstream
+  of us. (This port independently reproduced the same fix before the fork was
+  found; the two agreed almost line for line, which was reassuring.)
 - `TGE/sbios/sifrpc.c`: `(u8 *)packet += 64` was a cast-as-lvalue, a GNU C
   extension removed in gcc 4.0.
 - `TGE/sbios/strcmp.c`: **new**. The SBIOS links `-nostdlib` and ships its own
@@ -116,12 +149,17 @@ This is a correctness fix, not a portability tweak.
 ## Build status at the time of writing
 
 Builds: `ppm2rgb`, `png2rgb`, `hello`, `kernel/kernel.elf`, `sharedmem`,
-`TGE/sbios` (both `sbios_old.elf` and `sbios_new.elf`).
+`TGE/sbios` (both variants), `modules/`, `crc32gen`.
 
-Not yet building: `modules/` (ps2sdk fileio structs changed shape —
-`lpBuf->stat.mode` no longer resolves), then `crc32gen` and `loader/`. `loader/`
-is the largest component and still links against STLport, which modern ps2sdk
-no longer ships, plus nine years of gsKit drift.
+`loader/` is reached and compiling — STLport is no longer the blocker, thanks
+to citronalco's fix. Four categories of genuine work remain:
+
+- missing `<stdlib.h>`/`<malloc.h>` — `memalign`, `free`, `realloc`, `atoi`
+- `fioExit()`, a removed ps2sdk fileio API needing a modern equivalent
+- three incompatible-pointer-type call sites, which need reading rather than
+  suppressing
+- `loader/stdint.h` colliding with newlib's, because some files include
+  `"stdint.h"` and others `<stdint.h>` while `-I.` is in effect
 
 Note that the config-path change this port exists to enable — making
 kernelloader auto-load `mc1:kloader/config.txt` as well as `mc0:` — lives
