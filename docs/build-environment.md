@@ -10,10 +10,10 @@ without it.
 
 ```mermaid
 flowchart TD
-    REPO["ps2bootopia<br/><i>your repo</i>"]
+    REPO["kernelreloaded<br/><i>your repo</i>"]
     SUB["kernelloader/<br/><i>submodule — unmodified upstream</i>"]
     PATCH["patches/*.patch"]
-    IMG["<b>ps2bootopia:local</b><br/>built from Dockerfile"]
+    IMG["<b>kernelreloaded:local</b><br/>built from Dockerfile"]
     BASE["ghcr.io/ps2dev/ps2dev<br/><i>gcc 15, ps2sdk, gsKit</i>"]
     RUN["docker run<br/>-v repo:/work"]
     OUT["bin/*.elf"]
@@ -205,8 +205,8 @@ seems to have no effect:
 ## Reproducing from scratch
 
 ```bash
-git clone https://github.com/Arawn-Davies/ps2bootopia.git
-cd ps2bootopia
+git clone https://github.com/Arawn-Davies/kernelreloaded.git
+cd kernelreloaded
 git submodule update --init --recursive
 ./build.sh
 ```

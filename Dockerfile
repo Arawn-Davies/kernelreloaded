@@ -1,4 +1,4 @@
-# Dockerized PlayStation 2 build environment for kernelloader / ps2bootopia.
+# Dockerized PlayStation 2 build environment for kernelloader / kernelreloaded.
 #
 # The upstream ps2dev image ships the full PS2 cross-toolchain
 # (mips64r5900el-ps2-elf-gcc, ps2sdk, gsKit) with PS2DEV/PS2SDK/PATH already
