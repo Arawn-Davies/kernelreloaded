@@ -45,6 +45,15 @@ The fix is small — a config search list, `mc0:` then `mc1:`, which is what
 wLaunchELF and OSDMenu do — but it lives in `loader/`, which does not yet
 build. Hence the toolchain work.
 
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [`docs/kernelloader-internals.md`](docs/kernelloader-internals.md) | Boot chain, SBIOS vs kernel stub vs vmlinux, the config system in full (search order, all keys, device prefixes, the `CONFIG_DIR2` trap), build components, the SBIOS memory budget, `config.mk` switches |
+| [`docs/build-environment.md`](docs/build-environment.md) | Every Dockerfile layer and why it exists; how ps2sdk's `Rules.make` behaves out-of-tree; the `IOP_INCS` / `IOP_WARNFLAGS` / `PS2SDKSRC` hooks; `build.sh` usage; the stale-object trap |
+| [`docs/porting-notes.md`](docs/porting-notes.md) | Every build failure in order, with the actual error and root cause — including the two real bugs gcc 15 uncovered |
+| [`patches/README.md`](patches/README.md) | Summary of the 16 patched files, grouped by cause |
+
 ## Build
 
 Requires Docker. Nothing else — the toolchain lives in the image.
