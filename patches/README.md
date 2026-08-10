@@ -57,9 +57,23 @@ This is a correctness fix, not a portability tweak.
   63-bit field no longer fits. Struct-level `packed` is retained.
 - `TGE/sbios/sifdma.c`: `sif1_dmatags` alignment 64 → 16. gcc 15 rejects
   `aligned(64)` on an array of 16-byte elements (the attribute lands on the
-  element type). **This loses the cache-aliasing protection the original
-  comment asks for** — a wrapper struct/union does not help, gcc propagates the
-  alignment to the member. If SIF1 DMA misbehaves on hardware, suspect this.
+  element type); a wrapper struct/union does not help, gcc propagates the
+  alignment to the member.
+
+  This loses the cache-aliasing protection the comment above it asks for — but
+  **less than it first appears**. Comparing against the original TGE
+  ([ps2homebrew/TGE](https://github.com/ps2homebrew/TGE), 2004), that array
+  carries *no alignment attribute at all*:
+
+  ```c
+  static ee_dmatag_t  sif1_dmatags[32];   /* upstream TGE */
+  static iop_dmatag_t iop_dmatags[32];    /* upstream TGE */
+  ```
+
+  The `aligned(64)` was added later by kernelloader. So `aligned(16)` is still
+  **stricter than the original design**, and matches the qword alignment SIF
+  DMA actually requires. Worth knowing if SIF1 DMA ever misbehaves, but not the
+  regression it looked like.
 - `TGE/sbios/Makefile`: `-O2` → `-Os` for the `old` variant. gcc 15 emits more
   code, and the corrected 64-bit `u64` enlarged static data; together they
   overflowed the fixed `0xEFE0` region (see `TGE/sbios/linkfile` — it cannot
@@ -92,6 +106,12 @@ This is a correctness fix, not a portability tweak.
   and has no `CHG_PRITY` entry. This is a **pre-existing out-of-bounds read**
   that gcc 15 newly detects, not something this port introduced. Fixing it
   needs the correct MCSERV command byte, so it is left visible as a warning.
+
+  Provenance: `mc.c` does **not** exist in the original TGE
+  ([ps2homebrew/TGE](https://github.com/ps2homebrew/TGE) ships 12 files;
+  kernelloader's copy has 30). Memory card, CDVD, pad, sound and fileio support
+  were all added by kernelloader, so this is its bug rather than TGE's — which
+  is where a fix or an upstream report should go.
 
 ## Build status at the time of writing
 

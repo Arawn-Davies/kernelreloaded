@@ -213,6 +213,18 @@ hardware-mandated 16**. With `u64` corrected the struct is right, and
 > ⚠ **The cache-aliasing protection the comment asks for is not preserved.**
 > There is no way to express "align the array start to 64" via attributes that
 > gcc 15 accepts. If SIF1 DMA misbehaves on real hardware, look here first.
+>
+> **Later comparison against the original TGE softens this considerably.**
+> [ps2homebrew/TGE](https://github.com/ps2homebrew/TGE) (2004) declares both
+> tag arrays with *no alignment attribute whatsoever*:
+>
+> ```c
+> static ee_dmatag_t  sif1_dmatags[32];
+> static iop_dmatag_t iop_dmatags[32];
+> ```
+>
+> The `aligned(64)` was added later by kernelloader, so `aligned(16)` remains
+> **stricter than the design this code originally shipped with**.
 
 ### `pointer targets in assignment ... differ in signedness`
 
@@ -246,6 +258,10 @@ something this port introduced. Fixing it properly needs the correct MCSERV
 command byte, which is not in this tree, so it is **demoted with
 `-Wno-error=array-bounds` and deliberately not silenced** — it still warns on
 every build.
+
+`mc.c` does not exist in the original TGE at all — memory card support is one
+of kernelloader's additions — so this is kernelloader's bug to fix, not
+something to report upstream to TGE.
 
 ### `dereferencing type-punned pointer will break strict-aliasing rules`
 

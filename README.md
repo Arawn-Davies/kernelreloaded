@@ -103,9 +103,13 @@ Not yet: `modules/` (ps2sdk fileio structs changed shape), then `crc32gen` and
 `loader/` — the largest component, still linking STLport (which modern ps2sdk
 no longer ships) with nine years of gsKit drift on top.
 
-One fix carries a real caveat: `sif1_dmatags` alignment was reduced 64 → 16,
-losing cache-aliasing protection the original code asks for, because gcc 15
-will not express the original intent. It is flagged in-code and in
+One fix carries a caveat, though a smaller one than it first looked:
+`sif1_dmatags` alignment was reduced 64 → 16, because gcc 15 will not express
+the original intent. That drops a cache-aliasing protection the comment asks
+for — but the original TGE
+([ps2homebrew/TGE](https://github.com/ps2homebrew/TGE), 2004) declares that
+array with **no alignment attribute at all**, so 16 is still stricter than the
+design it shipped with. Flagged in-code and in
 [`patches/README.md`](patches/README.md).
 
 ## Roadmap
