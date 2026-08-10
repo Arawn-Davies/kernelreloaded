@@ -1,0 +1,2194 @@
+diff --git a/TGE/include/tge_types.h b/TGE/include/tge_types.h
+index aebf339..9727ab1 100644
+--- a/TGE/include/tge_types.h
++++ b/TGE/include/tge_types.h
+@@ -11,15 +11,20 @@
+ 
+ #include "stdint.h"
+ 
++/* u64/s64 were "unsigned/signed long int", which is only 64-bit when the
++ * compiler runs with -mgp64 (implied by the old -mips3 flag). Modern ps2dev gcc
++ * targets the n32 ABI where long is 32-bit, silently making u64 half-width --
++ * which shrank ee_dmatag_t from 16 to 12 bytes and broke the DMA tag layout.
++ * long long is 64-bit under both ABIs. Same defect as kernel/stdint.h. */
+ typedef	unsigned char 		u8;
+ typedef unsigned short 		u16;
+ typedef unsigned int 		u32;
+-typedef unsigned long int	u64;
++typedef unsigned long long	u64;
+ 
+ typedef signed char 		s8;
+ typedef signed short 		s16;
+ typedef	signed int 		s32;
+-typedef signed long int		s64;
++typedef signed long long	s64;
+ 
+ #if defined(R5900) || defined(_R5900)
+ typedef unsigned int		u128 __attribute__((mode(TI)));
+diff --git a/TGE/sbios/Makefile b/TGE/sbios/Makefile
+index 1fcf127..0017602 100644
+--- a/TGE/sbios/Makefile
++++ b/TGE/sbios/Makefile
+@@ -18,20 +18,54 @@ ifeq ($(ROM_MODULE_VERSION),new)
+ # SBIOS for new module is larger and need to be optimized for size.
+ EE_CFLAGS += -Os
+ else
+-# SBIOS for old modules can be optimized for speed.
+-EE_CFLAGS += -O2
++# Was -O2 ("SBIOS for old modules can be optimized for speed"). gcc 15 emits
++# noticeably more code than the 2000s toolchain, and correcting u64 in
++# tge_types.h from 32-bit to a true 64-bit doubled every u64 in static data --
++# together overflowing the fixed 0xEFE0 region (see linkfile; it cannot grow,
++# the PS2 model-number string sits at the end). -Os is the same remedy this
++# Makefile already applies to the 'new' variant for the same reason.
++EE_CFLAGS += -Os
+ endif
+ endif
+ EE_CFLAGS += $(EE_INCS)
+ EE_CFLAGS += -Wall -W -Werror-implicit-function-declaration -Wimplicit-int -Werror
+ EE_CFLAGS += -fno-builtin-memcpy -fno-builtin-memset
++# This freestanding stdio.h declares snprintf/vsnprintf with an int length where
++# gcc's builtins expect size_t. Combined with -Werror above, gcc 15 rejects the
++# mismatch. Suppressing the builtin for these two keeps the local prototypes
++# authoritative without changing any signature or implementation.
++EE_CFLAGS += -fno-builtin-snprintf -fno-builtin-vsnprintf
++# tge_types.h gates u128/s128 behind "#if defined(R5900) || defined(_R5900)",
++# which the old ee-gcc predefined. Modern mips64r5900el-ps2-elf-gcc defines
++# _MIPS_ARCH_R5900 instead, so u128 vanished -- surfacing as "unknown type name
++# 'u128'" and, because that malformed iop_dmatag_t, a bogus
++# "size of array element is not a multiple of its alignment" alongside it.
++EE_CFLAGS += -D_R5900
++# 2003-era code assigns freely between u32*/int* and similar. gcc grew
++# -Wpointer-sign since, and -Werror above turns every one into a build failure.
++# These are benign signedness mismatches, not type confusion; suppressing the
++# warning is far safer than casting at dozens of call sites in SIF/DMA code.
++EE_CFLAGS += -Wno-pointer-sign
++# mc.c:1140 indexes mcRpcCmd[2][17] with MC_FUNC_CHG_PRITY (0x14 = 20) -- the
++# wrong enum family. That table is indexed by MC_RPCCMD_* everywhere else, and
++# has no CHG_PRITY entry, so this reads out of bounds. It is a PRE-EXISTING bug
++# that gcc 15 newly detects, not something this port introduced, and fixing it
++# needs the correct MCSERV command byte. Demoted to a warning (not silenced) so
++# it stays visible until someone can resolve it.
++EE_CFLAGS += -Wno-error=array-bounds
++# The SBIOS type-puns through pointer casts all over (hardware registers,
++# SIF packets, sound regs), which violates strict aliasing. At -O2 gcc both
++# warns and is entitled to optimise on the assumption. Disabling the assumption
++# is the correct fix for code like this -- rewriting every pun via memcpy or
++# unions would be a large, risky change to code that cannot be tested here. */
++EE_CFLAGS += -fno-strict-aliasing
+ # BSD doesn't enable floating point registers. Only printf() saves them as precaution.
+ EE_CFLAGS += -msoft-float
+ 
+ EE_LDFLAGS = -nostartfiles -nostdlib -Tlinkfile
+ 
+ EE_FILES = prologue sbios misc sifdma core sifcmd sifrpc iopheap cache \
+-	strlen strncpy memcpy pad memset strcpy cdvd ncmd scmd smod iopmem \
++	strlen strncpy memcpy pad memset strcpy strcmp cdvd ncmd scmd smod iopmem \
+ 	memcmp mc mutex sound dve_reg
+ EE_OBJS = $(addsuffix _$(ROM_MODULE_VERSION).o, $(EE_FILES))
+ EE_FILES += printf snprintf
+diff --git a/TGE/sbios/dve_reg.S b/TGE/sbios/dve_reg.S
+index 08a3380..23780ec 100644
+--- a/TGE/sbios/dve_reg.S
++++ b/TGE/sbios/dve_reg.S
+@@ -101,7 +101,13 @@ dve_set_reg:
+ 	sh		$a1, 0($a2)
+ 	sh		$v0, 0($a3)
+ 	li		$v0, 0x82
++	/* Storing to an absolute address is a macro: the assembler materialises
++	 * 0xBA000000 via $at, which the ".set noat" at the top of this file
++	 * forbids. Modern binutils errors instead of quietly allowing it, so
++	 * permit $at for this one instruction. */
++	.set at
+ 	sh		$v0, 0xBA000000
++	.set noat
+ 	lhu		$a0, 0($t1)
+ 	andi	$a0, 0xFFFF
+ 	andi	$v0, $a0, 1
+diff --git a/TGE/sbios/sifdma.c b/TGE/sbios/sifdma.c
+index 0222c18..85d70be 100644
+--- a/TGE/sbios/sifdma.c
++++ b/TGE/sbios/sifdma.c
+@@ -33,7 +33,17 @@ static u16 sif1_dma_count;
+  * anything else.
+  * Must be cache line size aligned to prevent cache aliasing effects.
+  */
+-static ee_dmatag_t sif1_dmatags[32] __attribute__((aligned(64)));
++/* NOTE (modern-toolchain port): this was aligned(64) to put the array on a
++ * cache line, per the comment above. gcc 15 rejects that on an array of
++ * 16-byte elements -- the attribute lands on the element type and demands
++ * 64-byte elements ("alignment of array elements is greater than element
++ * size"). A union/struct wrapper does not help; gcc propagates the alignment
++ * to the member.
++ *
++ * Reduced to the qword alignment SIF DMA actually requires. The cache-aliasing
++ * protection the original comment asks for is therefore NOT preserved. If SIF1
++ * DMA misbehaves on real hardware, suspect this first. */
++static ee_dmatag_t sif1_dmatags[32] __attribute__((aligned(16)));
+ 
+ /* Describes the tag accepted by the IOP on SIF1 DMA transfers.  */
+ typedef struct {
+diff --git a/TGE/sbios/sifrpc.c b/TGE/sbios/sifrpc.c
+index 6b2fb75..cddb53f 100644
+--- a/TGE/sbios/sifrpc.c
++++ b/TGE/sbios/sifrpc.c
+@@ -73,7 +73,11 @@ void *_rpc_get_packet(struct rpc_data *rpc_data)
+ 	if (len > 0) {
+ 		packet = (SifRpcPktHeader_t *)rpc_data->pkt_table;
+ 
+-		for (rid = 0; rid < len; rid++, (u8 *)packet += 64) {
++		/* Was "(u8 *)packet += 64" -- a cast-as-lvalue, a GNU C extension
++		 * removed in gcc 4.0. Same semantics: step 64 bytes, not
++		 * sizeof(*packet). */
++		for (rid = 0; rid < len; rid++,
++		     packet = (SifRpcPktHeader_t *)((u8 *)packet + 64)) {
+ 			if (!(packet->rec_id & PACKET_F_ALLOC))
+ 				break;
+ 		}
+diff --git a/TGE/sbios/strcmp.c b/TGE/sbios/strcmp.c
+new file mode 100644
+index 0000000..e07bdc7
+--- /dev/null
++++ b/TGE/sbios/strcmp.c
+@@ -0,0 +1,23 @@
++/* strcmp for the TGE SBIOS.
++ *
++ * The SBIOS links -nostdlib and supplies its own string routines, one per file
++ * (strlen.S, strcpy.S, strncpy.S, memcpy.S, memset.S, memcmp.S) -- but never
++ * had a strcmp. smod.c/misc.c call it, and older toolchains satisfied that
++ * from libgcc or by inlining a builtin. gcc 15 does neither here, so the link
++ * fails with "undefined reference to `strcmp'".
++ *
++ * Plain C rather than hand-written MIPS: the neighbouring routines are
++ * quadword-optimised assembly from newlib, but strcmp is called only on short
++ * module-name strings during startup, so clarity beats speed and there is no
++ * assembly to get subtly wrong.
++ */
++
++int strcmp(const char *s1, const char *s2)
++{
++	while (*s1 && (*s1 == *s2)) {
++		s1++;
++		s2++;
++	}
++
++	return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
++}
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 5adc7ff..8456f9a 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -25,7 +25,14 @@ CFLAGS = -Wall -W -Werror-implicit-function-declaration -Wimplicit-int -EL -g \
+ ifeq ($(NEW_KERNEL_TOOLCHAIN),yes)
+ CFLAGS += -fno-builtin -mabi=n32 -march=r5900 -mno-llsc
+ else
+-CFLAGS += -mips3 -G0 -O0 -DPS2_EE
++# -mips3 replaced by -march=r5900. On gcc 15 the old flag forces -mgp64, which
++# collides with the target default -mno-odd-spreg ("unsupported combination").
++# -march=r5900 is also required for the assembler to accept the r5900 MMI
++# opcodes gcc emits (e.g. pextlw), which mips3 rejects.
++# -fno-builtin: gcc rewrites printf("...\n") into puts(), which does not exist
++# in this -nostdlib kernel ("undefined reference to `puts'"). The
++# NEW_KERNEL_TOOLCHAIN branch above already sets it for the same reason.
++CFLAGS += -march=r5900 -fno-builtin -G0 -O0 -DPS2_EE
+ endif
+ 
+ SRC = start $(PROGRAM) rtesif strlen strncpy \
+diff --git a/kernel/dmac.c b/kernel/dmac.c
+index fdcc051..b1cbda9 100644
+--- a/kernel/dmac.c
++++ b/kernel/dmac.c
+@@ -12,8 +12,8 @@
+ 
+ static uint64_t saved_dmac_mask;
+ 
+-static volatile uint64_t *dmac_mask = (unsigned long *) DMAC_MASK;
+-static volatile uint64_t *dmac_stat = (unsigned long *) DMAC_STAT;
++static volatile uint64_t *dmac_mask = (volatile uint64_t *) DMAC_MASK;
++static volatile uint64_t *dmac_stat = (volatile uint64_t *) DMAC_STAT;
+ 
+ /** Kernel DMAC interrupt handler. */
+ static irq_handler_t *dmac_handler[DMAC_NUMBER_OF_HANDLERS];
+diff --git a/kernel/graphic.c b/kernel/graphic.c
+index 0bd0da9..7504fe7 100644
+--- a/kernel/graphic.c
++++ b/kernel/graphic.c
+@@ -34,7 +34,7 @@ static inline void store_double(unsigned long addr, unsigned long long val)
+     __asm__ __volatile__(
+         ".set push\n"
+ #ifdef PS2_EE
+-        "       .set mips3\n"
++        "       .set arch=r5900\n"
+ #else
+         "       .set arch=r5900\n"
+ #endif
+@@ -50,7 +50,7 @@ static inline unsigned long long load_double(unsigned long addr)
+ 
+     __asm__ __volatile__(
+         ".set   push\n"
+-        "       .set    mips3\n"
++        "       .set arch=r5900\n"
+         "       ld      $8,(%2)\n"
+                 /* 63-32th bits must be same as 31th bit */
+         "       dsra    %1,$8,32\n"
+@@ -425,8 +425,11 @@ void setcrtc_old(int mode, int ffmd, int noreset)
+ #define GS_CSR (0x12001000 | KSEG1)
+ #define GS_IMR (0x12001010 | KSEG1)
+ 
+-static volatile uint64_t *gs_csr = (unsigned long *) GS_CSR;
+-static volatile uint64_t *gs_imr = (unsigned long *) GS_IMR;
++/* Cast to the declared type rather than "unsigned long": uint64_t is now
++ * unsigned long long (see stdint.h), and long is 32-bit under the n32 ABI
++ * that modern ps2dev gcc targets. */
++static volatile uint64_t *gs_csr = (volatile uint64_t *) GS_CSR;
++static volatile uint64_t *gs_imr = (volatile uint64_t *) GS_IMR;
+ 
+ /** Setup graphic mode. */
+ uint32_t syscallSetCrtc(int int_mode, int ntsc_pal, int field_mode)
+diff --git a/kernel/gs.h b/kernel/gs.h
+index 5f76a86..9ed5099 100644
+--- a/kernel/gs.h
++++ b/kernel/gs.h
+@@ -297,13 +297,13 @@
+ #define PS2_GS_CLEAR_GSREG(p)	*(uint64_t *)(p) = 0
+ /* ALPHA */
+ typedef struct {
+-	uint64_t A:      2 __attribute__((packed));
+-	uint64_t B:      2 __attribute__((packed));
+-	uint64_t C:      2 __attribute__((packed));
+-	uint64_t D:      2 __attribute__((packed));
+-	uint64_t pad8:  24 __attribute__((packed));
+-	uint64_t FIX:    8 __attribute__((packed));
+-	uint64_t pad40: 24 __attribute__((packed));
++	uint64_t A:      2;
++	uint64_t B:      2;
++	uint64_t C:      2;
++	uint64_t D:      2;
++	uint64_t pad8:  24;
++	uint64_t FIX:    8;
++	uint64_t pad40: 24;
+ } ps2_gsreg_alpha __attribute__((packed));
+ #define PS2_GS_ALPHA_A_CS	0
+ #define PS2_GS_ALPHA_A_CD	1
+@@ -321,29 +321,29 @@ typedef struct {
+ /* BITBLTBUF */
+ /** use ioctl PS2IOC_{LOAD,SAVE}IMAGE for HOST<->LOCAL xfer **/
+ typedef struct {
+-	uint64_t SBP:   14 __attribute__((packed));
+-	uint64_t pad14:  2 __attribute__((packed));
+-	uint64_t SBW:    6 __attribute__((packed));
+-	uint64_t pad22:  2 __attribute__((packed));
+-	uint64_t SPSM:   6 __attribute__((packed));
+-	uint64_t pad30:  2 __attribute__((packed));
+-	uint64_t DBP:   14 __attribute__((packed));
+-	uint64_t pad46:  2 __attribute__((packed));
+-	uint64_t DBW:    6 __attribute__((packed));
+-	uint64_t pad54:  2 __attribute__((packed));
+-	uint64_t DPSM:   6 __attribute__((packed));
+-	uint64_t pad62:  2 __attribute__((packed));
++	uint64_t SBP:   14;
++	uint64_t pad14:  2;
++	uint64_t SBW:    6;
++	uint64_t pad22:  2;
++	uint64_t SPSM:   6;
++	uint64_t pad30:  2;
++	uint64_t DBP:   14;
++	uint64_t pad46:  2;
++	uint64_t DBW:    6;
++	uint64_t pad54:  2;
++	uint64_t DPSM:   6;
++	uint64_t pad62:  2;
+ } ps2_gsreg_bitbltbuf __attribute__((packed));
+ 
+ /* CLAMP */
+ typedef struct {
+-	uint64_t WMS:    2 __attribute__((packed));
+-	uint64_t WMT:    2 __attribute__((packed));
+-	uint64_t MINU:  10 __attribute__((packed));
+-	uint64_t MAXU:  10 __attribute__((packed));
+-	uint64_t MINV:  10 __attribute__((packed));
+-	uint64_t MAXV:  10 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t WMS:    2;
++	uint64_t WMT:    2;
++	uint64_t MINU:  10;
++	uint64_t MAXU:  10;
++	uint64_t MINV:  10;
++	uint64_t MAXV:  10;
++	uint64_t pad44: 20;
+ } ps2_gsreg_clamp __attribute__((packed));
+ #define PS2_GS_CLAMP_REPEAT		0
+ #define PS2_GS_CLAMP_CLAMP		1
+@@ -352,8 +352,8 @@ typedef struct {
+ 
+ /* COLCLAMP */
+ typedef struct {
+-	uint64_t CLAMP:  1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t CLAMP:  1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_colclamp __attribute__((packed));
+ #define PS2_GS_COLCLAMP_MASK		0
+ #define PS2_GS_COLCLAMP_CLAMP		1
+@@ -361,138 +361,138 @@ typedef struct {
+ 
+ /* DIMX */
+ typedef struct {
+-	uint64_t DM00:  3 __attribute__((packed));
+-	uint64_t pad03: 1 __attribute__((packed));
+-	uint64_t DM01:  3 __attribute__((packed));
+-	uint64_t pad07: 1 __attribute__((packed));
+-	uint64_t DM02:  3 __attribute__((packed));
+-	uint64_t pad11: 1 __attribute__((packed));
+-	uint64_t DM03:  3 __attribute__((packed));
+-	uint64_t pad15: 1 __attribute__((packed));
+-	uint64_t DM10:  3 __attribute__((packed));
+-	uint64_t pad19: 1 __attribute__((packed));
+-	uint64_t DM11:  3 __attribute__((packed));
+-	uint64_t pad23: 1 __attribute__((packed));
+-	uint64_t DM12:  3 __attribute__((packed));
+-	uint64_t pad27: 1 __attribute__((packed));
+-	uint64_t DM13:  3 __attribute__((packed));
+-	uint64_t pad31: 1 __attribute__((packed));
+-	uint64_t DM20:  3 __attribute__((packed));
+-	uint64_t pad35: 1 __attribute__((packed));
+-	uint64_t DM21:  3 __attribute__((packed));
+-	uint64_t pad39: 1 __attribute__((packed));
+-	uint64_t DM22:  3 __attribute__((packed));
+-	uint64_t pad43: 1 __attribute__((packed));
+-	uint64_t DM23:  3 __attribute__((packed));
+-	uint64_t pad47: 1 __attribute__((packed));
+-	uint64_t DM30:  3 __attribute__((packed));
+-	uint64_t pad51: 1 __attribute__((packed));
+-	uint64_t DM31:  3 __attribute__((packed));
+-	uint64_t pad55: 1 __attribute__((packed));
+-	uint64_t DM32:  3 __attribute__((packed));
+-	uint64_t pad59: 1 __attribute__((packed));
+-	uint64_t DM33:  3 __attribute__((packed));
+-	uint64_t pad63: 1 __attribute__((packed));
++	uint64_t DM00:  3;
++	uint64_t pad03: 1;
++	uint64_t DM01:  3;
++	uint64_t pad07: 1;
++	uint64_t DM02:  3;
++	uint64_t pad11: 1;
++	uint64_t DM03:  3;
++	uint64_t pad15: 1;
++	uint64_t DM10:  3;
++	uint64_t pad19: 1;
++	uint64_t DM11:  3;
++	uint64_t pad23: 1;
++	uint64_t DM12:  3;
++	uint64_t pad27: 1;
++	uint64_t DM13:  3;
++	uint64_t pad31: 1;
++	uint64_t DM20:  3;
++	uint64_t pad35: 1;
++	uint64_t DM21:  3;
++	uint64_t pad39: 1;
++	uint64_t DM22:  3;
++	uint64_t pad43: 1;
++	uint64_t DM23:  3;
++	uint64_t pad47: 1;
++	uint64_t DM30:  3;
++	uint64_t pad51: 1;
++	uint64_t DM31:  3;
++	uint64_t pad55: 1;
++	uint64_t DM32:  3;
++	uint64_t pad59: 1;
++	uint64_t DM33:  3;
++	uint64_t pad63: 1;
+ } ps2_gsreg_dimx __attribute__((packed));
+ 
+ /* DTHE */
+ typedef struct {
+-	uint64_t DTHE:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t DTHE:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_dthe __attribute__((packed));
+ #define PS2_GS_DTHE_OFF		0
+ #define PS2_GS_DTHE_ON		1
+ 
+ /* FBA */
+ typedef struct {
+-	uint64_t FBA:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t FBA:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_fba __attribute__((packed));
+ 
+ /* FINISH */
+ typedef struct {
+-	uint64_t pad00: 64 __attribute__((packed));
++	uint64_t pad00: 64;
+ } ps2_gsreg_finish __attribute__((packed));
+ 
+ /* FOG */
+ typedef struct {
+-	uint64_t pad00: 56 __attribute__((packed));
+-	uint64_t F:      8 __attribute__((packed));
++	uint64_t pad00: 56;
++	uint64_t F:      8;
+ } ps2_gsreg_fog __attribute__((packed));
+ 
+ /* FOGCOL */
+ typedef struct {
+-	uint64_t FCR:    8 __attribute__((packed));
+-	uint64_t FCG:    8 __attribute__((packed));
+-	uint64_t FCB:    8 __attribute__((packed));
+-	uint64_t pad24: 40 __attribute__((packed));
++	uint64_t FCR:    8;
++	uint64_t FCG:    8;
++	uint64_t FCB:    8;
++	uint64_t pad24: 40;
+ } ps2_gsreg_fogcol __attribute__((packed));
+ 
+ /* FRAME */
+ typedef struct {
+-	uint64_t FBP:    9 __attribute__((packed));
+-	uint64_t pad09:  7 __attribute__((packed));
+-	uint64_t FBW:    6 __attribute__((packed));
+-	uint64_t pad22:  2 __attribute__((packed));
+-	uint64_t PSM:    6 __attribute__((packed));
+-	uint64_t pad30:  2 __attribute__((packed));
+-	uint64_t FBMSK: 32 __attribute__((packed));
++	uint64_t FBP:    9;
++	uint64_t pad09:  7;
++	uint64_t FBW:    6;
++	uint64_t pad22:  2;
++	uint64_t PSM:    6;
++	uint64_t pad30:  2;
++	uint64_t FBMSK: 32;
+ } ps2_gsreg_frame __attribute__((packed));
+ 
+ /* HWREG */
+ /** use ioctl PS2IOC_{LOAD,SAVE}IMAGE **/
+ typedef struct {
+-	uint64_t DATA: 64 __attribute__((packed));
++	uint64_t DATA: 64;
+ } ps2_gsreg_hwreg __attribute__((packed));
+ 
+ /* LABEL */
+ typedef struct {
+-	uint64_t ID:    32 __attribute__((packed));
+-	uint64_t IDMSK: 32 __attribute__((packed));
++	uint64_t ID:    32;
++	uint64_t IDMSK: 32;
+ } ps2_gsreg_label __attribute__((packed));
+ 
+ /* MIPTBP1 */
+ typedef struct {
+-	uint64_t TBP1:  14 __attribute__((packed));
+-	uint64_t TBW1:   6 __attribute__((packed));
+-	uint64_t TBP2:  14 __attribute__((packed));
+-	uint64_t TBW2:   6 __attribute__((packed));
+-	uint64_t TBP3:  14 __attribute__((packed));
+-	uint64_t TBW3:   6 __attribute__((packed));
+-	uint64_t pad60:  4 __attribute__((packed));
++	uint64_t TBP1:  14;
++	uint64_t TBW1:   6;
++	uint64_t TBP2:  14;
++	uint64_t TBW2:   6;
++	uint64_t TBP3:  14;
++	uint64_t TBW3:   6;
++	uint64_t pad60:  4;
+ } ps2_gsreg_miptbp1 __attribute__((packed));
+ 
+ /* MIPTBP2 */
+ typedef struct {
+-	uint64_t TBP4:  14 __attribute__((packed));
+-	uint64_t TBW4:   6 __attribute__((packed));
+-	uint64_t TBP5:  14 __attribute__((packed));
+-	uint64_t TBW5:   6 __attribute__((packed));
+-	uint64_t TBP6:  14 __attribute__((packed));
+-	uint64_t TBW6:   6 __attribute__((packed));
+-	uint64_t pad60:  4 __attribute__((packed));
++	uint64_t TBP4:  14;
++	uint64_t TBW4:   6;
++	uint64_t TBP5:  14;
++	uint64_t TBW5:   6;
++	uint64_t TBP6:  14;
++	uint64_t TBW6:   6;
++	uint64_t pad60:  4;
+ } ps2_gsreg_miptbp2 __attribute__((packed));
+ 
+ /* PABE */
+ typedef struct {
+-	uint64_t PABE:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t PABE:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_pabe __attribute__((packed));
+ #define PS2_GS_PABE_OFF		0
+ #define PS2_GS_PABE_ON		1
+ 
+ /* PRIM */
+ typedef struct {
+-	uint64_t PRIM:   3 __attribute__((packed));
+-	uint64_t IIP:    1 __attribute__((packed));
+-	uint64_t TME:    1 __attribute__((packed));
+-	uint64_t FGE:    1 __attribute__((packed));
+-	uint64_t ABE:    1 __attribute__((packed));
+-	uint64_t AA1:    1 __attribute__((packed));
+-	uint64_t FST:    1 __attribute__((packed));
+-	uint64_t CTXT:   1 __attribute__((packed));
+-	uint64_t FIX:    1 __attribute__((packed));
+-	uint64_t pad11: 53 __attribute__((packed));
++	uint64_t PRIM:   3;
++	uint64_t IIP:    1;
++	uint64_t TME:    1;
++	uint64_t FGE:    1;
++	uint64_t ABE:    1;
++	uint64_t AA1:    1;
++	uint64_t FST:    1;
++	uint64_t CTXT:   1;
++	uint64_t FIX:    1;
++	uint64_t pad11: 53;
+ } ps2_gsreg_prim __attribute__((packed));
+ #define PS2_GS_PRIM_PRIM_POINT		0
+ #define PS2_GS_PRIM_PRIM_LINE		1
+@@ -520,40 +520,40 @@ typedef struct {
+ 
+ /* PRMODE */
+ typedef struct {
+-	uint64_t pad00:  3 __attribute__((packed));
+-	uint64_t IIP:    1 __attribute__((packed));
+-	uint64_t TME:    1 __attribute__((packed));
+-	uint64_t FGE:    1 __attribute__((packed));
+-	uint64_t ABE:    1 __attribute__((packed));
+-	uint64_t AA1:    1 __attribute__((packed));
+-	uint64_t FST:    1 __attribute__((packed));
+-	uint64_t CTXT:   1 __attribute__((packed));
+-	uint64_t FIX:    1 __attribute__((packed));
+-	uint64_t pad11: 53 __attribute__((packed));
++	uint64_t pad00:  3;
++	uint64_t IIP:    1;
++	uint64_t TME:    1;
++	uint64_t FGE:    1;
++	uint64_t ABE:    1;
++	uint64_t AA1:    1;
++	uint64_t FST:    1;
++	uint64_t CTXT:   1;
++	uint64_t FIX:    1;
++	uint64_t pad11: 53;
+ } ps2_gsreg_prmode __attribute__((packed));
+ /* use PRIM defines */
+ 
+ /* PRMODECONT */
+ typedef struct {
+-	uint64_t AC:     1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t AC:     1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_prmodecont __attribute__((packed));
+ #define PS2_GS_PRMODECONT_REFPRMODE	0
+ #define PS2_GS_PRMODECONT_REFPRIM	1
+ 
+ /* RGBAQ */
+ typedef struct {
+-	uint64_t R: 8 __attribute__((packed));
+-	uint64_t G: 8 __attribute__((packed));
+-	uint64_t B: 8 __attribute__((packed));
+-	uint64_t A: 8 __attribute__((packed));
++	uint64_t R: 8;
++	uint64_t G: 8;
++	uint64_t B: 8;
++	uint64_t A: 8;
+ 	float Q    __attribute__((packed));
+ } ps2_gsreg_rgbaq __attribute__((packed));
+ 
+ /* SCANMSK */
+ typedef struct {
+-	uint64_t MSK:    2 __attribute__((packed));
+-	uint64_t pad02: 62 __attribute__((packed));
++	uint64_t MSK:    2;
++	uint64_t pad02: 62;
+ } ps2_gsreg_scanmsk __attribute__((packed));
+ #define PS2_GS_SCANMSK_NOMASK		0
+ #define PS2_GS_SCANMSK_MASKEVEN		2
+@@ -561,20 +561,20 @@ typedef struct {
+ 
+ /* SCISSOR */
+ typedef struct {
+-	uint64_t SCAX0: 11 __attribute__((packed));
+-	uint64_t pad11:  5 __attribute__((packed));
+-	uint64_t SCAX1: 11 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t SCAY0: 11 __attribute__((packed));
+-	uint64_t pad43:  5 __attribute__((packed));
+-	uint64_t SCAY1: 11 __attribute__((packed));
+-	uint64_t pad59:  5 __attribute__((packed));
++	uint64_t SCAX0: 11;
++	uint64_t pad11:  5;
++	uint64_t SCAX1: 11;
++	uint64_t pad27:  5;
++	uint64_t SCAY0: 11;
++	uint64_t pad43:  5;
++	uint64_t SCAY1: 11;
++	uint64_t pad59:  5;
+ } ps2_gsreg_scissor __attribute__((packed));
+ 
+ /* SIGNAL */
+ typedef struct {
+-	uint64_t ID:    32 __attribute__((packed));
+-	uint64_t IDMSK: 32 __attribute__((packed));
++	uint64_t ID:    32;
++	uint64_t IDMSK: 32;
+ } ps2_gsreg_signal __attribute__((packed));
+ 
+ /* ST */
+@@ -585,15 +585,15 @@ typedef struct {
+ 
+ /* TEST */
+ typedef struct {
+-	uint64_t ATE:    1 __attribute__((packed));
+-	uint64_t ATST:   3 __attribute__((packed));
+-	uint64_t AREF:   8 __attribute__((packed));
+-	uint64_t AFAIL:  2 __attribute__((packed));
+-	uint64_t DATE:   1 __attribute__((packed));
+-	uint64_t DATM:   1 __attribute__((packed));
+-	uint64_t ZTE:    1 __attribute__((packed));
+-	uint64_t ZTST:   2 __attribute__((packed));
+-	uint64_t pad19: 45 __attribute__((packed));
++	uint64_t ATE:    1;
++	uint64_t ATST:   3;
++	uint64_t AREF:   8;
++	uint64_t AFAIL:  2;
++	uint64_t DATE:   1;
++	uint64_t DATM:   1;
++	uint64_t ZTE:    1;
++	uint64_t ZTST:   2;
++	uint64_t pad19: 45;
+ } ps2_gsreg_test __attribute__((packed));
+ #define PS2_GS_TEST_ATE_OFF		0
+ #define PS2_GS_TEST_ATE_ON		1
+@@ -626,18 +626,18 @@ typedef struct {
+ 
+ /* TEX0 */
+ typedef struct {
+-	uint64_t TBP0: 14 __attribute__((packed));
+-	uint64_t TBW:   6 __attribute__((packed));
+-	uint64_t PSM:   6 __attribute__((packed));
+-	uint64_t TW:    4 __attribute__((packed));
+-	uint64_t TH:    4 __attribute__((packed));
+-	uint64_t TCC:   1 __attribute__((packed));
+-	uint64_t TFX:   2 __attribute__((packed));
+-	uint64_t CBP:  14 __attribute__((packed));
+-	uint64_t CPSM:  4 __attribute__((packed));
+-	uint64_t CSM:   1 __attribute__((packed));
+-	uint64_t CSA:   5 __attribute__((packed));
+-	uint64_t CLD:   3 __attribute__((packed));
++	uint64_t TBP0: 14;
++	uint64_t TBW:   6;
++	uint64_t PSM:   6;
++	uint64_t TW:    4;
++	uint64_t TH:    4;
++	uint64_t TCC:   1;
++	uint64_t TFX:   2;
++	uint64_t CBP:  14;
++	uint64_t CPSM:  4;
++	uint64_t CSM:   1;
++	uint64_t CSA:   5;
++	uint64_t CLD:   3;
+ } ps2_gsreg_tex0 __attribute__((packed));
+ #define PS2_GS_TEX_TCC_RGB			0
+ #define PS2_GS_TEX_TCC_RGBA			1
+@@ -656,17 +656,17 @@ typedef struct {
+ 
+ /* TEX1 */
+ typedef struct {
+-	uint64_t LCM:    1 __attribute__((packed));
+-	uint64_t pad01:  1 __attribute__((packed));
+-	uint64_t MXL:    3 __attribute__((packed));
+-	uint64_t MMAG:   1 __attribute__((packed));
+-	uint64_t MMIN:   3 __attribute__((packed));
+-	uint64_t MTBA:   1 __attribute__((packed));
+-	uint64_t pad10:  9 __attribute__((packed));
+-	uint64_t L:      2 __attribute__((packed));
+-	uint64_t pad21: 11 __attribute__((packed));
+-	uint64_t K:     12 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t LCM:    1;
++	uint64_t pad01:  1;
++	uint64_t MXL:    3;
++	uint64_t MMAG:   1;
++	uint64_t MMIN:   3;
++	uint64_t MTBA:   1;
++	uint64_t pad10:  9;
++	uint64_t L:      2;
++	uint64_t pad21: 11;
++	uint64_t K:     12;
++	uint64_t pad44: 20;
+ } ps2_gsreg_tex1 __attribute__((packed));
+ #define PS2_GS_TEX1_LCM_CALC				0
+ #define PS2_GS_TEX1_LCM_K				1
+@@ -683,46 +683,46 @@ typedef struct {
+ 
+ /* TEX2 */
+ typedef struct {
+-	uint64_t pad00: 20 __attribute__((packed));
+-	uint64_t PSM:    6 __attribute__((packed));
+-	uint64_t pad26: 11 __attribute__((packed));
+-	uint64_t CBP:   14 __attribute__((packed));
+-	uint64_t CPSM:   4 __attribute__((packed));
+-	uint64_t CSM:    1 __attribute__((packed));
+-	uint64_t CSA:    5 __attribute__((packed));
+-	uint64_t CLD:    3 __attribute__((packed));
++	uint64_t pad00: 20;
++	uint64_t PSM:    6;
++	uint64_t pad26: 11;
++	uint64_t CBP:   14;
++	uint64_t CPSM:   4;
++	uint64_t CSM:    1;
++	uint64_t CSA:    5;
++	uint64_t CLD:    3;
+ } ps2_gsreg_tex2 __attribute__((packed));
+ /* use TEX0 defines */
+ 
+ /* TEXA */
+ typedef struct {
+-	uint64_t TA0:    8 __attribute__((packed));
+-	uint64_t pad08:  7 __attribute__((packed));
+-	uint64_t AEM:    1 __attribute__((packed));
+-	uint64_t pad16: 16 __attribute__((packed));
+-	uint64_t TA1:    8 __attribute__((packed));
+-	uint64_t pad40: 24 __attribute__((packed));
++	uint64_t TA0:    8;
++	uint64_t pad08:  7;
++	uint64_t AEM:    1;
++	uint64_t pad16: 16;
++	uint64_t TA1:    8;
++	uint64_t pad40: 24;
+ } ps2_gsreg_texa __attribute__((packed));
+ #define PS2_GS_TEXA_AEM_NORMAL		0
+ #define PS2_GS_TEXA_AEM_BLACKTHRU	1
+ 
+ /* TEXCLUT */
+ typedef struct {
+-	uint64_t CBW:    6 __attribute__((packed));
+-	uint64_t COU:    6 __attribute__((packed));
+-	uint64_t COV:   10 __attribute__((packed));
+-	uint64_t pad22: 42 __attribute__((packed));
++	uint64_t CBW:    6;
++	uint64_t COU:    6;
++	uint64_t COV:   10;
++	uint64_t pad22: 42;
+ } ps2_gsreg_texclut;
+ 
+ /* TEXFLUSH */
+ typedef struct {
+-	uint64_t pad00: 64 __attribute__((packed));
++	uint64_t pad00: 64;
+ } ps2_gsreg_texflush __attribute__((packed));
+ 
+ /* TRXDIR */
+ typedef struct {
+-	uint64_t XDR:    2 __attribute__((packed));
+-	uint64_t pad02: 62 __attribute__((packed));
++	uint64_t XDR:    2;
++	uint64_t pad02: 62;
+ } ps2_gsreg_trxdir __attribute__((packed));
+ #define PS2_GS_TRXDIR_HOST_TO_LOCAL	0
+ #define PS2_GS_TRXDIR_LOCAL_TO_HOST	1
+@@ -730,15 +730,15 @@ typedef struct {
+ 
+ /* TRXPOS */
+ typedef struct {
+-	uint64_t SSAX:  11 __attribute__((packed));
+-	uint64_t pad11:  5 __attribute__((packed));
+-	uint64_t SSAY:  11 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t DSAX:  11 __attribute__((packed));
+-	uint64_t pad43:  5 __attribute__((packed));
+-	uint64_t DSAY:  11 __attribute__((packed));
+-	uint64_t DIR:    2 __attribute__((packed));
+-	uint64_t pad61:  3 __attribute__((packed));
++	uint64_t SSAX:  11;
++	uint64_t pad11:  5;
++	uint64_t SSAY:  11;
++	uint64_t pad27:  5;
++	uint64_t DSAX:  11;
++	uint64_t pad43:  5;
++	uint64_t DSAY:  11;
++	uint64_t DIR:    2;
++	uint64_t pad61:  3;
+ } ps2_gsreg_trxpos __attribute__((packed));
+ #define PS2_GS_TRXPOS_DIR_LR_UD		0
+ #define PS2_GS_TRXPOS_DIR_LR_DU		1
+@@ -747,51 +747,51 @@ typedef struct {
+ 
+ /* TRXREG */
+ typedef struct {
+-	uint64_t RRW:   12 __attribute__((packed));
+-	uint64_t pad12: 20 __attribute__((packed));
+-	uint64_t RRH:   12 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t RRW:   12;
++	uint64_t pad12: 20;
++	uint64_t RRH:   12;
++	uint64_t pad44: 20;
+ } ps2_gsreg_trxreg __attribute__((packed));
+ 
+ /* UV */
+ typedef struct {
+-	uint64_t U:     14 __attribute__((packed));
+-	uint64_t pad14:  2 __attribute__((packed));
+-	uint64_t V:     14 __attribute__((packed));
+-	uint64_t pad30: 34 __attribute__((packed));
++	uint64_t U:     14;
++	uint64_t pad14:  2;
++	uint64_t V:     14;
++	uint64_t pad30: 34;
+ } ps2_gsreg_uv __attribute__((packed));
+ 
+ /* XYOFFSET */
+ typedef struct {
+-	uint64_t OFX:   16 __attribute__((packed));
+-	uint64_t pad16: 16 __attribute__((packed));
+-	uint64_t OFY:   16 __attribute__((packed));
+-	uint64_t pad48: 16 __attribute__((packed));
++	uint64_t OFX:   16;
++	uint64_t pad16: 16;
++	uint64_t OFY:   16;
++	uint64_t pad48: 16;
+ } ps2_gsreg_xyoffset __attribute__((packed));
+ 
+ /* XYZ2/3 */
+ typedef struct {
+-	uint64_t X: 16 __attribute__((packed));
+-	uint64_t Y: 16 __attribute__((packed));
+-	uint64_t Z: 32 __attribute__((packed));
++	uint64_t X: 16;
++	uint64_t Y: 16;
++	uint64_t Z: 32;
+ } ps2_gsreg_xyz __attribute__((packed));
+ 
+ /* XYZF2/3 */
+ typedef struct {
+-	uint64_t X: 16 __attribute__((packed));
+-	uint64_t Y: 16 __attribute__((packed));
+-	uint64_t Z: 24 __attribute__((packed));
+-	uint64_t F:  8 __attribute__((packed));
++	uint64_t X: 16;
++	uint64_t Y: 16;
++	uint64_t Z: 24;
++	uint64_t F:  8;
+ } ps2_gsreg_xyzf __attribute__((packed));
+ 
+ /* ZBUF */
+ typedef struct {
+-	uint64_t ZBP:    9 __attribute__((packed));
+-	uint64_t pad09: 15 __attribute__((packed));
+-	uint64_t PSM:    4 __attribute__((packed));
+-	uint64_t pad28:  4 __attribute__((packed));
+-	uint64_t ZMSK:   1 __attribute__((packed));
+-	uint64_t pad33: 31 __attribute__((packed));
++	uint64_t ZBP:    9;
++	uint64_t pad09: 15;
++	uint64_t PSM:    4;
++	uint64_t pad28:  4;
++	uint64_t ZMSK:   1;
++	uint64_t pad33: 31;
+ } ps2_gsreg_zbuf __attribute__((packed));
+ #define PS2_GS_ZBUF_ZMSK_NOMASK	0
+ #define PS2_GS_ZBUF_ZMSK_MASK	1
+@@ -799,10 +799,10 @@ typedef struct {
+ /* GS special registers */
+ /* BGCOLOR */
+ typedef struct {
+-	uint64_t R:      8 __attribute__((packed));
+-	uint64_t G:      8 __attribute__((packed));
+-	uint64_t B:      8 __attribute__((packed));
+-	uint64_t pad24: 40 __attribute__((packed));
++	uint64_t R:      8;
++	uint64_t G:      8;
++	uint64_t B:      8;
++	uint64_t pad24: 40;
+ } ps2_gssreg_bgcolor __attribute__((packed));
+ 
+ /* BUSDIR */
+@@ -812,21 +812,21 @@ typedef struct {
+ /* CSR */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t SIGNAL:      1 __attribute__((packed)); /* ro */
+-	uint64_t FINISH:      1 __attribute__((packed)); /* ro */
+-	uint64_t HSINT:       1 __attribute__((packed)); /* ro */
+-	uint64_t VSINT:       1 __attribute__((packed)); /* ro */
+-	uint64_t reserved04:  3 __attribute__((packed)); /* ro */
+-	uint64_t pad07:       1 __attribute__((packed));
+-	uint64_t FLUSH:       1 __attribute__((packed)); /* rw */
+-	uint64_t RESET:       1 __attribute__((packed)); /* N/A */
+-	uint64_t pad10:       2 __attribute__((packed));
+-	uint64_t NFIELD:      1 __attribute__((packed)); /* ro */
+-	uint64_t FIELD:       1 __attribute__((packed)); /* ro */
+-	uint64_t FIFO:        2 __attribute__((packed)); /* ro */
+-	uint64_t REV:         8 __attribute__((packed)); /* ro */
+-	uint64_t ID:          8 __attribute__((packed)); /* ro */
+-	uint64_t pad32:      32 __attribute__((packed));
++	uint64_t SIGNAL:      1; /* ro */
++	uint64_t FINISH:      1; /* ro */
++	uint64_t HSINT:       1; /* ro */
++	uint64_t VSINT:       1; /* ro */
++	uint64_t reserved04:  3; /* ro */
++	uint64_t pad07:       1;
++	uint64_t FLUSH:       1; /* rw */
++	uint64_t RESET:       1; /* N/A */
++	uint64_t pad10:       2;
++	uint64_t NFIELD:      1; /* ro */
++	uint64_t FIELD:       1; /* ro */
++	uint64_t FIFO:        2; /* ro */
++	uint64_t REV:         8; /* ro */
++	uint64_t ID:          8; /* ro */
++	uint64_t pad32:      32;
+ } ps2_gssreg_csr __attribute__((packed));
+ #define PS2_GS_CSR_FLUSH		1
+ #define PS2_GS_CSR_FIELD_EVEN		0
+@@ -838,40 +838,40 @@ typedef struct {
+ /* DISPFB1/2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t FBP:    9 __attribute__((packed));
+-	uint64_t FBW:    6 __attribute__((packed));
+-	uint64_t PSM:    5 __attribute__((packed));
+-	uint64_t pad20: 12 __attribute__((packed));
+-	uint64_t DBX:   11 __attribute__((packed));
+-	uint64_t DBY:   11 __attribute__((packed));
+-	uint64_t pad54: 10 __attribute__((packed));
++	uint64_t FBP:    9;
++	uint64_t FBW:    6;
++	uint64_t PSM:    5;
++	uint64_t pad20: 12;
++	uint64_t DBX:   11;
++	uint64_t DBY:   11;
++	uint64_t pad54: 10;
+ } ps2_gssreg_dispfb __attribute__((packed));
+ 
+ /* DISPLAY1/2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t DX:    12 __attribute__((packed));
+-	uint64_t DY:    11 __attribute__((packed));
+-	uint64_t MAGH:   4 __attribute__((packed));
+-	uint64_t MAGV:   2 __attribute__((packed));
+-	uint64_t pad29:  3 __attribute__((packed));
+-	uint64_t DW:    12 __attribute__((packed));
+-	uint64_t DH:    11 __attribute__((packed));
+-	uint64_t pad55:  9 __attribute__((packed));
++	uint64_t DX:    12;
++	uint64_t DY:    11;
++	uint64_t MAGH:   4;
++	uint64_t MAGV:   2;
++	uint64_t pad29:  3;
++	uint64_t DW:    12;
++	uint64_t DH:    11;
++	uint64_t pad55:  9;
+ } ps2_gssreg_display __attribute__((packed));
+ 
+ /* EXTBUF */
+ typedef struct {
+-	uint64_t EXBP:  14 __attribute__((packed));
+-	uint64_t EXBW:   6 __attribute__((packed));
+-	uint64_t FBIN:   2 __attribute__((packed));
+-	uint64_t WFFMD:  1 __attribute__((packed));
+-	uint64_t EMODA:  2 __attribute__((packed));
+-	uint64_t EMODC:  2 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t WDX:   11 __attribute__((packed));
+-	uint64_t WDY:   11 __attribute__((packed));
+-	uint64_t pad54: 10 __attribute__((packed));
++	uint64_t EXBP:  14;
++	uint64_t EXBW:   6;
++	uint64_t FBIN:   2;
++	uint64_t WFFMD:  1;
++	uint64_t EMODA:  2;
++	uint64_t EMODC:  2;
++	uint64_t pad27:  5;
++	uint64_t WDX:   11;
++	uint64_t WDY:   11;
++	uint64_t pad54: 10;
+ } ps2_gssreg_extbuf __attribute__((packed));
+ #define PS2_GS_EXTBUF_FBIN_OUT1		0
+ #define PS2_GS_EXTBUF_FBIN_OUT2		1
+@@ -888,20 +888,20 @@ typedef struct {
+ 
+ /* EXTDATA */
+ typedef struct {
+-	uint64_t SX:    12 __attribute__((packed));
+-	uint64_t SY:    11 __attribute__((packed));
+-	uint64_t SMPH:   4 __attribute__((packed));
+-	uint64_t SMPV:   2 __attribute__((packed));
+-	uint64_t pad29:  3 __attribute__((packed));
+-	uint64_t WW:    12 __attribute__((packed));
+-	uint64_t WH:    11 __attribute__((packed));
+-	uint64_t pad55:  9 __attribute__((packed));
++	uint64_t SX:    12;
++	uint64_t SY:    11;
++	uint64_t SMPH:   4;
++	uint64_t SMPV:   2;
++	uint64_t pad29:  3;
++	uint64_t WW:    12;
++	uint64_t WH:    11;
++	uint64_t pad55:  9;
+ } ps2_gssreg_extdata __attribute__((packed));
+ 
+ /* EXTWRITE */
+ typedef struct {
+-	uint64_t EXTWRITE:  1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t EXTWRITE:  1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_extwrite __attribute__((packed));
+ #define PS2_GS_EXTWRITE_STOP	0
+ #define PS2_GS_EXTWRITE_START	1
+@@ -909,29 +909,29 @@ typedef struct {
+ /* IMR */
+ /** see ps2event_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t pad00:      8 __attribute__((packed));
+-	uint64_t SIGMSK:     1 __attribute__((packed)); /* ro */
+-	uint64_t FINISHMSK:  1 __attribute__((packed)); /* ro */
+-	uint64_t HSMSK:      1 __attribute__((packed)); /* ro */
+-	uint64_t VSMSK:      1 __attribute__((packed)); /* ro */
+-	uint64_t reserve12:  1 __attribute__((packed)); /* ro */
+-	uint64_t reserve13:  1 __attribute__((packed)); /* ro */
+-	uint64_t reserve14:  1 __attribute__((packed)); /* ro */
+-	uint64_t pad15:     49 __attribute__((packed));
++	uint64_t pad00:      8;
++	uint64_t SIGMSK:     1; /* ro */
++	uint64_t FINISHMSK:  1; /* ro */
++	uint64_t HSMSK:      1; /* ro */
++	uint64_t VSMSK:      1; /* ro */
++	uint64_t reserve12:  1; /* ro */
++	uint64_t reserve13:  1; /* ro */
++	uint64_t reserve14:  1; /* ro */
++	uint64_t pad15:     49;
+ } ps2_gsreg_imr __attribute__((packed));
+ 
+ /* PMODE */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t EN1:        1 __attribute__((packed));
+-	uint64_t EN2:        1 __attribute__((packed));
+-	uint64_t CRTMD:      3 __attribute__((packed));
+-	uint64_t MMOD:       1 __attribute__((packed));
+-	uint64_t AMOD:       1 __attribute__((packed));
+-	uint64_t SLBG:       1 __attribute__((packed));
+-	uint64_t ALP:        8 __attribute__((packed));
+-	uint64_t reserve16: 17 __attribute__((packed));
+-	uint64_t pad33:     31 __attribute__((packed));
++	uint64_t EN1:        1;
++	uint64_t EN2:        1;
++	uint64_t CRTMD:      3;
++	uint64_t MMOD:       1;
++	uint64_t AMOD:       1;
++	uint64_t SLBG:       1;
++	uint64_t ALP:        8;
++	uint64_t reserve16: 17;
++	uint64_t pad33:     31;
+ } ps2_gsreg_pmode __attribute__((packed));
+ #define PS2_GS_PMODE_EN_OFF		0
+ #define PS2_GS_PMODE_EN_ON		1
+@@ -944,17 +944,17 @@ typedef struct {
+ 
+ /* SIGLBLID */
+ typedef struct {
+-	uint64_t SIGID: 32 __attribute__((packed));
+-	uint64_t LBLID: 32 __attribute__((packed));
++	uint64_t SIGID: 32;
++	uint64_t LBLID: 32;
+ } ps2_gsreg_siglblid __attribute__((packed));
+ 
+ /* SMODE2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t INT:    1 __attribute__((packed));
+-	uint64_t FFMD:   1 __attribute__((packed));
+-	uint64_t DPMS:   2 __attribute__((packed));
+-	uint64_t pad04: 60 __attribute__((packed));
++	uint64_t INT:    1;
++	uint64_t FFMD:   1;
++	uint64_t DPMS:   2;
++	uint64_t pad04: 60;
+ } ps2_gsreg_smode2 __attribute__((packed));
+ #define PS2_GS_SMODE2_INT_NOINTERLACE	0
+ #define PS2_GS_SMODE2_INT_INTERLACE	1
+diff --git a/kernel/intc.c b/kernel/intc.c
+index ad030f1..15ed398 100644
+--- a/kernel/intc.c
++++ b/kernel/intc.c
+@@ -12,8 +12,8 @@
+ 
+ static uint64_t saved_intc_mask;
+ 
+-static volatile uint64_t *intc_mask = (unsigned long *) INTC_MASK;
+-static volatile uint64_t *intc_stat = (unsigned long *) INTC_STAT;
++static volatile uint64_t *intc_mask = (volatile uint64_t *) INTC_MASK;
++static volatile uint64_t *intc_stat = (volatile uint64_t *) INTC_STAT;
+ 
+ static irq_handler_t *intc_handler[INTC_NUMBER_OF_HANDLERS];
+ 
+diff --git a/kernel/irq.c b/kernel/irq.c
+index 00a6358..ab7a4a7 100644
+--- a/kernel/irq.c
++++ b/kernel/irq.c
+@@ -15,7 +15,7 @@
+ 
+ #define IRQ_NUMBER_OF_HANDLERS 3
+ 
+-static volatile uint64_t *sbus_smflg = (unsigned long *) SBUS_SMFLG;
++static volatile uint64_t *sbus_smflg = (volatile uint64_t *) SBUS_SMFLG;
+ 
+ static irq_handler_t *irq_handler[IRQ_NUMBER_OF_HANDLERS];
+ 
+diff --git a/kernel/stdint.h b/kernel/stdint.h
+index 498a77a..f4301c5 100644
+--- a/kernel/stdint.h
++++ b/kernel/stdint.h
+@@ -6,7 +6,11 @@ typedef unsigned char uint8_t;
+ typedef unsigned short uint16_t;
+ typedef unsigned int uint32_t;
+ #ifdef PS2_EE
+-typedef unsigned /*long*/ long uint64_t;
++/* Was "unsigned long", which is only 64-bit when the compiler is invoked with
++ * -mgp64 (implied by the old -mips3 flag). Under the n32 ABI that modern
++ * ps2dev gcc targets, long is 32-bit, so 64-bit bitfields in gs.h failed with
++ * "width of 'padXX' exceeds its type". long long is 64-bit under both. */
++typedef unsigned long long uint64_t;
+ typedef unsigned int uint128_t __attribute__((mode(TI), aligned(16)));
+ #else
+ typedef unsigned long long uint64_t;
+@@ -15,7 +19,7 @@ typedef signed char int8_t;
+ typedef signed short int16_t;
+ typedef signed int int32_t;
+ #ifdef PS2_EE
+-typedef signed /*long*/ long int64_t;
++typedef signed long long int64_t;
+ typedef __signed__ int int128_t __attribute__((mode(TI), aligned(16)));
+ #else
+ typedef signed long long int64_t;
+diff --git a/loader/gs.h b/loader/gs.h
+index 5f76a86..9ed5099 100644
+--- a/loader/gs.h
++++ b/loader/gs.h
+@@ -297,13 +297,13 @@
+ #define PS2_GS_CLEAR_GSREG(p)	*(uint64_t *)(p) = 0
+ /* ALPHA */
+ typedef struct {
+-	uint64_t A:      2 __attribute__((packed));
+-	uint64_t B:      2 __attribute__((packed));
+-	uint64_t C:      2 __attribute__((packed));
+-	uint64_t D:      2 __attribute__((packed));
+-	uint64_t pad8:  24 __attribute__((packed));
+-	uint64_t FIX:    8 __attribute__((packed));
+-	uint64_t pad40: 24 __attribute__((packed));
++	uint64_t A:      2;
++	uint64_t B:      2;
++	uint64_t C:      2;
++	uint64_t D:      2;
++	uint64_t pad8:  24;
++	uint64_t FIX:    8;
++	uint64_t pad40: 24;
+ } ps2_gsreg_alpha __attribute__((packed));
+ #define PS2_GS_ALPHA_A_CS	0
+ #define PS2_GS_ALPHA_A_CD	1
+@@ -321,29 +321,29 @@ typedef struct {
+ /* BITBLTBUF */
+ /** use ioctl PS2IOC_{LOAD,SAVE}IMAGE for HOST<->LOCAL xfer **/
+ typedef struct {
+-	uint64_t SBP:   14 __attribute__((packed));
+-	uint64_t pad14:  2 __attribute__((packed));
+-	uint64_t SBW:    6 __attribute__((packed));
+-	uint64_t pad22:  2 __attribute__((packed));
+-	uint64_t SPSM:   6 __attribute__((packed));
+-	uint64_t pad30:  2 __attribute__((packed));
+-	uint64_t DBP:   14 __attribute__((packed));
+-	uint64_t pad46:  2 __attribute__((packed));
+-	uint64_t DBW:    6 __attribute__((packed));
+-	uint64_t pad54:  2 __attribute__((packed));
+-	uint64_t DPSM:   6 __attribute__((packed));
+-	uint64_t pad62:  2 __attribute__((packed));
++	uint64_t SBP:   14;
++	uint64_t pad14:  2;
++	uint64_t SBW:    6;
++	uint64_t pad22:  2;
++	uint64_t SPSM:   6;
++	uint64_t pad30:  2;
++	uint64_t DBP:   14;
++	uint64_t pad46:  2;
++	uint64_t DBW:    6;
++	uint64_t pad54:  2;
++	uint64_t DPSM:   6;
++	uint64_t pad62:  2;
+ } ps2_gsreg_bitbltbuf __attribute__((packed));
+ 
+ /* CLAMP */
+ typedef struct {
+-	uint64_t WMS:    2 __attribute__((packed));
+-	uint64_t WMT:    2 __attribute__((packed));
+-	uint64_t MINU:  10 __attribute__((packed));
+-	uint64_t MAXU:  10 __attribute__((packed));
+-	uint64_t MINV:  10 __attribute__((packed));
+-	uint64_t MAXV:  10 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t WMS:    2;
++	uint64_t WMT:    2;
++	uint64_t MINU:  10;
++	uint64_t MAXU:  10;
++	uint64_t MINV:  10;
++	uint64_t MAXV:  10;
++	uint64_t pad44: 20;
+ } ps2_gsreg_clamp __attribute__((packed));
+ #define PS2_GS_CLAMP_REPEAT		0
+ #define PS2_GS_CLAMP_CLAMP		1
+@@ -352,8 +352,8 @@ typedef struct {
+ 
+ /* COLCLAMP */
+ typedef struct {
+-	uint64_t CLAMP:  1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t CLAMP:  1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_colclamp __attribute__((packed));
+ #define PS2_GS_COLCLAMP_MASK		0
+ #define PS2_GS_COLCLAMP_CLAMP		1
+@@ -361,138 +361,138 @@ typedef struct {
+ 
+ /* DIMX */
+ typedef struct {
+-	uint64_t DM00:  3 __attribute__((packed));
+-	uint64_t pad03: 1 __attribute__((packed));
+-	uint64_t DM01:  3 __attribute__((packed));
+-	uint64_t pad07: 1 __attribute__((packed));
+-	uint64_t DM02:  3 __attribute__((packed));
+-	uint64_t pad11: 1 __attribute__((packed));
+-	uint64_t DM03:  3 __attribute__((packed));
+-	uint64_t pad15: 1 __attribute__((packed));
+-	uint64_t DM10:  3 __attribute__((packed));
+-	uint64_t pad19: 1 __attribute__((packed));
+-	uint64_t DM11:  3 __attribute__((packed));
+-	uint64_t pad23: 1 __attribute__((packed));
+-	uint64_t DM12:  3 __attribute__((packed));
+-	uint64_t pad27: 1 __attribute__((packed));
+-	uint64_t DM13:  3 __attribute__((packed));
+-	uint64_t pad31: 1 __attribute__((packed));
+-	uint64_t DM20:  3 __attribute__((packed));
+-	uint64_t pad35: 1 __attribute__((packed));
+-	uint64_t DM21:  3 __attribute__((packed));
+-	uint64_t pad39: 1 __attribute__((packed));
+-	uint64_t DM22:  3 __attribute__((packed));
+-	uint64_t pad43: 1 __attribute__((packed));
+-	uint64_t DM23:  3 __attribute__((packed));
+-	uint64_t pad47: 1 __attribute__((packed));
+-	uint64_t DM30:  3 __attribute__((packed));
+-	uint64_t pad51: 1 __attribute__((packed));
+-	uint64_t DM31:  3 __attribute__((packed));
+-	uint64_t pad55: 1 __attribute__((packed));
+-	uint64_t DM32:  3 __attribute__((packed));
+-	uint64_t pad59: 1 __attribute__((packed));
+-	uint64_t DM33:  3 __attribute__((packed));
+-	uint64_t pad63: 1 __attribute__((packed));
++	uint64_t DM00:  3;
++	uint64_t pad03: 1;
++	uint64_t DM01:  3;
++	uint64_t pad07: 1;
++	uint64_t DM02:  3;
++	uint64_t pad11: 1;
++	uint64_t DM03:  3;
++	uint64_t pad15: 1;
++	uint64_t DM10:  3;
++	uint64_t pad19: 1;
++	uint64_t DM11:  3;
++	uint64_t pad23: 1;
++	uint64_t DM12:  3;
++	uint64_t pad27: 1;
++	uint64_t DM13:  3;
++	uint64_t pad31: 1;
++	uint64_t DM20:  3;
++	uint64_t pad35: 1;
++	uint64_t DM21:  3;
++	uint64_t pad39: 1;
++	uint64_t DM22:  3;
++	uint64_t pad43: 1;
++	uint64_t DM23:  3;
++	uint64_t pad47: 1;
++	uint64_t DM30:  3;
++	uint64_t pad51: 1;
++	uint64_t DM31:  3;
++	uint64_t pad55: 1;
++	uint64_t DM32:  3;
++	uint64_t pad59: 1;
++	uint64_t DM33:  3;
++	uint64_t pad63: 1;
+ } ps2_gsreg_dimx __attribute__((packed));
+ 
+ /* DTHE */
+ typedef struct {
+-	uint64_t DTHE:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t DTHE:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_dthe __attribute__((packed));
+ #define PS2_GS_DTHE_OFF		0
+ #define PS2_GS_DTHE_ON		1
+ 
+ /* FBA */
+ typedef struct {
+-	uint64_t FBA:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t FBA:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_fba __attribute__((packed));
+ 
+ /* FINISH */
+ typedef struct {
+-	uint64_t pad00: 64 __attribute__((packed));
++	uint64_t pad00: 64;
+ } ps2_gsreg_finish __attribute__((packed));
+ 
+ /* FOG */
+ typedef struct {
+-	uint64_t pad00: 56 __attribute__((packed));
+-	uint64_t F:      8 __attribute__((packed));
++	uint64_t pad00: 56;
++	uint64_t F:      8;
+ } ps2_gsreg_fog __attribute__((packed));
+ 
+ /* FOGCOL */
+ typedef struct {
+-	uint64_t FCR:    8 __attribute__((packed));
+-	uint64_t FCG:    8 __attribute__((packed));
+-	uint64_t FCB:    8 __attribute__((packed));
+-	uint64_t pad24: 40 __attribute__((packed));
++	uint64_t FCR:    8;
++	uint64_t FCG:    8;
++	uint64_t FCB:    8;
++	uint64_t pad24: 40;
+ } ps2_gsreg_fogcol __attribute__((packed));
+ 
+ /* FRAME */
+ typedef struct {
+-	uint64_t FBP:    9 __attribute__((packed));
+-	uint64_t pad09:  7 __attribute__((packed));
+-	uint64_t FBW:    6 __attribute__((packed));
+-	uint64_t pad22:  2 __attribute__((packed));
+-	uint64_t PSM:    6 __attribute__((packed));
+-	uint64_t pad30:  2 __attribute__((packed));
+-	uint64_t FBMSK: 32 __attribute__((packed));
++	uint64_t FBP:    9;
++	uint64_t pad09:  7;
++	uint64_t FBW:    6;
++	uint64_t pad22:  2;
++	uint64_t PSM:    6;
++	uint64_t pad30:  2;
++	uint64_t FBMSK: 32;
+ } ps2_gsreg_frame __attribute__((packed));
+ 
+ /* HWREG */
+ /** use ioctl PS2IOC_{LOAD,SAVE}IMAGE **/
+ typedef struct {
+-	uint64_t DATA: 64 __attribute__((packed));
++	uint64_t DATA: 64;
+ } ps2_gsreg_hwreg __attribute__((packed));
+ 
+ /* LABEL */
+ typedef struct {
+-	uint64_t ID:    32 __attribute__((packed));
+-	uint64_t IDMSK: 32 __attribute__((packed));
++	uint64_t ID:    32;
++	uint64_t IDMSK: 32;
+ } ps2_gsreg_label __attribute__((packed));
+ 
+ /* MIPTBP1 */
+ typedef struct {
+-	uint64_t TBP1:  14 __attribute__((packed));
+-	uint64_t TBW1:   6 __attribute__((packed));
+-	uint64_t TBP2:  14 __attribute__((packed));
+-	uint64_t TBW2:   6 __attribute__((packed));
+-	uint64_t TBP3:  14 __attribute__((packed));
+-	uint64_t TBW3:   6 __attribute__((packed));
+-	uint64_t pad60:  4 __attribute__((packed));
++	uint64_t TBP1:  14;
++	uint64_t TBW1:   6;
++	uint64_t TBP2:  14;
++	uint64_t TBW2:   6;
++	uint64_t TBP3:  14;
++	uint64_t TBW3:   6;
++	uint64_t pad60:  4;
+ } ps2_gsreg_miptbp1 __attribute__((packed));
+ 
+ /* MIPTBP2 */
+ typedef struct {
+-	uint64_t TBP4:  14 __attribute__((packed));
+-	uint64_t TBW4:   6 __attribute__((packed));
+-	uint64_t TBP5:  14 __attribute__((packed));
+-	uint64_t TBW5:   6 __attribute__((packed));
+-	uint64_t TBP6:  14 __attribute__((packed));
+-	uint64_t TBW6:   6 __attribute__((packed));
+-	uint64_t pad60:  4 __attribute__((packed));
++	uint64_t TBP4:  14;
++	uint64_t TBW4:   6;
++	uint64_t TBP5:  14;
++	uint64_t TBW5:   6;
++	uint64_t TBP6:  14;
++	uint64_t TBW6:   6;
++	uint64_t pad60:  4;
+ } ps2_gsreg_miptbp2 __attribute__((packed));
+ 
+ /* PABE */
+ typedef struct {
+-	uint64_t PABE:   1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t PABE:   1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_pabe __attribute__((packed));
+ #define PS2_GS_PABE_OFF		0
+ #define PS2_GS_PABE_ON		1
+ 
+ /* PRIM */
+ typedef struct {
+-	uint64_t PRIM:   3 __attribute__((packed));
+-	uint64_t IIP:    1 __attribute__((packed));
+-	uint64_t TME:    1 __attribute__((packed));
+-	uint64_t FGE:    1 __attribute__((packed));
+-	uint64_t ABE:    1 __attribute__((packed));
+-	uint64_t AA1:    1 __attribute__((packed));
+-	uint64_t FST:    1 __attribute__((packed));
+-	uint64_t CTXT:   1 __attribute__((packed));
+-	uint64_t FIX:    1 __attribute__((packed));
+-	uint64_t pad11: 53 __attribute__((packed));
++	uint64_t PRIM:   3;
++	uint64_t IIP:    1;
++	uint64_t TME:    1;
++	uint64_t FGE:    1;
++	uint64_t ABE:    1;
++	uint64_t AA1:    1;
++	uint64_t FST:    1;
++	uint64_t CTXT:   1;
++	uint64_t FIX:    1;
++	uint64_t pad11: 53;
+ } ps2_gsreg_prim __attribute__((packed));
+ #define PS2_GS_PRIM_PRIM_POINT		0
+ #define PS2_GS_PRIM_PRIM_LINE		1
+@@ -520,40 +520,40 @@ typedef struct {
+ 
+ /* PRMODE */
+ typedef struct {
+-	uint64_t pad00:  3 __attribute__((packed));
+-	uint64_t IIP:    1 __attribute__((packed));
+-	uint64_t TME:    1 __attribute__((packed));
+-	uint64_t FGE:    1 __attribute__((packed));
+-	uint64_t ABE:    1 __attribute__((packed));
+-	uint64_t AA1:    1 __attribute__((packed));
+-	uint64_t FST:    1 __attribute__((packed));
+-	uint64_t CTXT:   1 __attribute__((packed));
+-	uint64_t FIX:    1 __attribute__((packed));
+-	uint64_t pad11: 53 __attribute__((packed));
++	uint64_t pad00:  3;
++	uint64_t IIP:    1;
++	uint64_t TME:    1;
++	uint64_t FGE:    1;
++	uint64_t ABE:    1;
++	uint64_t AA1:    1;
++	uint64_t FST:    1;
++	uint64_t CTXT:   1;
++	uint64_t FIX:    1;
++	uint64_t pad11: 53;
+ } ps2_gsreg_prmode __attribute__((packed));
+ /* use PRIM defines */
+ 
+ /* PRMODECONT */
+ typedef struct {
+-	uint64_t AC:     1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t AC:     1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_prmodecont __attribute__((packed));
+ #define PS2_GS_PRMODECONT_REFPRMODE	0
+ #define PS2_GS_PRMODECONT_REFPRIM	1
+ 
+ /* RGBAQ */
+ typedef struct {
+-	uint64_t R: 8 __attribute__((packed));
+-	uint64_t G: 8 __attribute__((packed));
+-	uint64_t B: 8 __attribute__((packed));
+-	uint64_t A: 8 __attribute__((packed));
++	uint64_t R: 8;
++	uint64_t G: 8;
++	uint64_t B: 8;
++	uint64_t A: 8;
+ 	float Q    __attribute__((packed));
+ } ps2_gsreg_rgbaq __attribute__((packed));
+ 
+ /* SCANMSK */
+ typedef struct {
+-	uint64_t MSK:    2 __attribute__((packed));
+-	uint64_t pad02: 62 __attribute__((packed));
++	uint64_t MSK:    2;
++	uint64_t pad02: 62;
+ } ps2_gsreg_scanmsk __attribute__((packed));
+ #define PS2_GS_SCANMSK_NOMASK		0
+ #define PS2_GS_SCANMSK_MASKEVEN		2
+@@ -561,20 +561,20 @@ typedef struct {
+ 
+ /* SCISSOR */
+ typedef struct {
+-	uint64_t SCAX0: 11 __attribute__((packed));
+-	uint64_t pad11:  5 __attribute__((packed));
+-	uint64_t SCAX1: 11 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t SCAY0: 11 __attribute__((packed));
+-	uint64_t pad43:  5 __attribute__((packed));
+-	uint64_t SCAY1: 11 __attribute__((packed));
+-	uint64_t pad59:  5 __attribute__((packed));
++	uint64_t SCAX0: 11;
++	uint64_t pad11:  5;
++	uint64_t SCAX1: 11;
++	uint64_t pad27:  5;
++	uint64_t SCAY0: 11;
++	uint64_t pad43:  5;
++	uint64_t SCAY1: 11;
++	uint64_t pad59:  5;
+ } ps2_gsreg_scissor __attribute__((packed));
+ 
+ /* SIGNAL */
+ typedef struct {
+-	uint64_t ID:    32 __attribute__((packed));
+-	uint64_t IDMSK: 32 __attribute__((packed));
++	uint64_t ID:    32;
++	uint64_t IDMSK: 32;
+ } ps2_gsreg_signal __attribute__((packed));
+ 
+ /* ST */
+@@ -585,15 +585,15 @@ typedef struct {
+ 
+ /* TEST */
+ typedef struct {
+-	uint64_t ATE:    1 __attribute__((packed));
+-	uint64_t ATST:   3 __attribute__((packed));
+-	uint64_t AREF:   8 __attribute__((packed));
+-	uint64_t AFAIL:  2 __attribute__((packed));
+-	uint64_t DATE:   1 __attribute__((packed));
+-	uint64_t DATM:   1 __attribute__((packed));
+-	uint64_t ZTE:    1 __attribute__((packed));
+-	uint64_t ZTST:   2 __attribute__((packed));
+-	uint64_t pad19: 45 __attribute__((packed));
++	uint64_t ATE:    1;
++	uint64_t ATST:   3;
++	uint64_t AREF:   8;
++	uint64_t AFAIL:  2;
++	uint64_t DATE:   1;
++	uint64_t DATM:   1;
++	uint64_t ZTE:    1;
++	uint64_t ZTST:   2;
++	uint64_t pad19: 45;
+ } ps2_gsreg_test __attribute__((packed));
+ #define PS2_GS_TEST_ATE_OFF		0
+ #define PS2_GS_TEST_ATE_ON		1
+@@ -626,18 +626,18 @@ typedef struct {
+ 
+ /* TEX0 */
+ typedef struct {
+-	uint64_t TBP0: 14 __attribute__((packed));
+-	uint64_t TBW:   6 __attribute__((packed));
+-	uint64_t PSM:   6 __attribute__((packed));
+-	uint64_t TW:    4 __attribute__((packed));
+-	uint64_t TH:    4 __attribute__((packed));
+-	uint64_t TCC:   1 __attribute__((packed));
+-	uint64_t TFX:   2 __attribute__((packed));
+-	uint64_t CBP:  14 __attribute__((packed));
+-	uint64_t CPSM:  4 __attribute__((packed));
+-	uint64_t CSM:   1 __attribute__((packed));
+-	uint64_t CSA:   5 __attribute__((packed));
+-	uint64_t CLD:   3 __attribute__((packed));
++	uint64_t TBP0: 14;
++	uint64_t TBW:   6;
++	uint64_t PSM:   6;
++	uint64_t TW:    4;
++	uint64_t TH:    4;
++	uint64_t TCC:   1;
++	uint64_t TFX:   2;
++	uint64_t CBP:  14;
++	uint64_t CPSM:  4;
++	uint64_t CSM:   1;
++	uint64_t CSA:   5;
++	uint64_t CLD:   3;
+ } ps2_gsreg_tex0 __attribute__((packed));
+ #define PS2_GS_TEX_TCC_RGB			0
+ #define PS2_GS_TEX_TCC_RGBA			1
+@@ -656,17 +656,17 @@ typedef struct {
+ 
+ /* TEX1 */
+ typedef struct {
+-	uint64_t LCM:    1 __attribute__((packed));
+-	uint64_t pad01:  1 __attribute__((packed));
+-	uint64_t MXL:    3 __attribute__((packed));
+-	uint64_t MMAG:   1 __attribute__((packed));
+-	uint64_t MMIN:   3 __attribute__((packed));
+-	uint64_t MTBA:   1 __attribute__((packed));
+-	uint64_t pad10:  9 __attribute__((packed));
+-	uint64_t L:      2 __attribute__((packed));
+-	uint64_t pad21: 11 __attribute__((packed));
+-	uint64_t K:     12 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t LCM:    1;
++	uint64_t pad01:  1;
++	uint64_t MXL:    3;
++	uint64_t MMAG:   1;
++	uint64_t MMIN:   3;
++	uint64_t MTBA:   1;
++	uint64_t pad10:  9;
++	uint64_t L:      2;
++	uint64_t pad21: 11;
++	uint64_t K:     12;
++	uint64_t pad44: 20;
+ } ps2_gsreg_tex1 __attribute__((packed));
+ #define PS2_GS_TEX1_LCM_CALC				0
+ #define PS2_GS_TEX1_LCM_K				1
+@@ -683,46 +683,46 @@ typedef struct {
+ 
+ /* TEX2 */
+ typedef struct {
+-	uint64_t pad00: 20 __attribute__((packed));
+-	uint64_t PSM:    6 __attribute__((packed));
+-	uint64_t pad26: 11 __attribute__((packed));
+-	uint64_t CBP:   14 __attribute__((packed));
+-	uint64_t CPSM:   4 __attribute__((packed));
+-	uint64_t CSM:    1 __attribute__((packed));
+-	uint64_t CSA:    5 __attribute__((packed));
+-	uint64_t CLD:    3 __attribute__((packed));
++	uint64_t pad00: 20;
++	uint64_t PSM:    6;
++	uint64_t pad26: 11;
++	uint64_t CBP:   14;
++	uint64_t CPSM:   4;
++	uint64_t CSM:    1;
++	uint64_t CSA:    5;
++	uint64_t CLD:    3;
+ } ps2_gsreg_tex2 __attribute__((packed));
+ /* use TEX0 defines */
+ 
+ /* TEXA */
+ typedef struct {
+-	uint64_t TA0:    8 __attribute__((packed));
+-	uint64_t pad08:  7 __attribute__((packed));
+-	uint64_t AEM:    1 __attribute__((packed));
+-	uint64_t pad16: 16 __attribute__((packed));
+-	uint64_t TA1:    8 __attribute__((packed));
+-	uint64_t pad40: 24 __attribute__((packed));
++	uint64_t TA0:    8;
++	uint64_t pad08:  7;
++	uint64_t AEM:    1;
++	uint64_t pad16: 16;
++	uint64_t TA1:    8;
++	uint64_t pad40: 24;
+ } ps2_gsreg_texa __attribute__((packed));
+ #define PS2_GS_TEXA_AEM_NORMAL		0
+ #define PS2_GS_TEXA_AEM_BLACKTHRU	1
+ 
+ /* TEXCLUT */
+ typedef struct {
+-	uint64_t CBW:    6 __attribute__((packed));
+-	uint64_t COU:    6 __attribute__((packed));
+-	uint64_t COV:   10 __attribute__((packed));
+-	uint64_t pad22: 42 __attribute__((packed));
++	uint64_t CBW:    6;
++	uint64_t COU:    6;
++	uint64_t COV:   10;
++	uint64_t pad22: 42;
+ } ps2_gsreg_texclut;
+ 
+ /* TEXFLUSH */
+ typedef struct {
+-	uint64_t pad00: 64 __attribute__((packed));
++	uint64_t pad00: 64;
+ } ps2_gsreg_texflush __attribute__((packed));
+ 
+ /* TRXDIR */
+ typedef struct {
+-	uint64_t XDR:    2 __attribute__((packed));
+-	uint64_t pad02: 62 __attribute__((packed));
++	uint64_t XDR:    2;
++	uint64_t pad02: 62;
+ } ps2_gsreg_trxdir __attribute__((packed));
+ #define PS2_GS_TRXDIR_HOST_TO_LOCAL	0
+ #define PS2_GS_TRXDIR_LOCAL_TO_HOST	1
+@@ -730,15 +730,15 @@ typedef struct {
+ 
+ /* TRXPOS */
+ typedef struct {
+-	uint64_t SSAX:  11 __attribute__((packed));
+-	uint64_t pad11:  5 __attribute__((packed));
+-	uint64_t SSAY:  11 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t DSAX:  11 __attribute__((packed));
+-	uint64_t pad43:  5 __attribute__((packed));
+-	uint64_t DSAY:  11 __attribute__((packed));
+-	uint64_t DIR:    2 __attribute__((packed));
+-	uint64_t pad61:  3 __attribute__((packed));
++	uint64_t SSAX:  11;
++	uint64_t pad11:  5;
++	uint64_t SSAY:  11;
++	uint64_t pad27:  5;
++	uint64_t DSAX:  11;
++	uint64_t pad43:  5;
++	uint64_t DSAY:  11;
++	uint64_t DIR:    2;
++	uint64_t pad61:  3;
+ } ps2_gsreg_trxpos __attribute__((packed));
+ #define PS2_GS_TRXPOS_DIR_LR_UD		0
+ #define PS2_GS_TRXPOS_DIR_LR_DU		1
+@@ -747,51 +747,51 @@ typedef struct {
+ 
+ /* TRXREG */
+ typedef struct {
+-	uint64_t RRW:   12 __attribute__((packed));
+-	uint64_t pad12: 20 __attribute__((packed));
+-	uint64_t RRH:   12 __attribute__((packed));
+-	uint64_t pad44: 20 __attribute__((packed));
++	uint64_t RRW:   12;
++	uint64_t pad12: 20;
++	uint64_t RRH:   12;
++	uint64_t pad44: 20;
+ } ps2_gsreg_trxreg __attribute__((packed));
+ 
+ /* UV */
+ typedef struct {
+-	uint64_t U:     14 __attribute__((packed));
+-	uint64_t pad14:  2 __attribute__((packed));
+-	uint64_t V:     14 __attribute__((packed));
+-	uint64_t pad30: 34 __attribute__((packed));
++	uint64_t U:     14;
++	uint64_t pad14:  2;
++	uint64_t V:     14;
++	uint64_t pad30: 34;
+ } ps2_gsreg_uv __attribute__((packed));
+ 
+ /* XYOFFSET */
+ typedef struct {
+-	uint64_t OFX:   16 __attribute__((packed));
+-	uint64_t pad16: 16 __attribute__((packed));
+-	uint64_t OFY:   16 __attribute__((packed));
+-	uint64_t pad48: 16 __attribute__((packed));
++	uint64_t OFX:   16;
++	uint64_t pad16: 16;
++	uint64_t OFY:   16;
++	uint64_t pad48: 16;
+ } ps2_gsreg_xyoffset __attribute__((packed));
+ 
+ /* XYZ2/3 */
+ typedef struct {
+-	uint64_t X: 16 __attribute__((packed));
+-	uint64_t Y: 16 __attribute__((packed));
+-	uint64_t Z: 32 __attribute__((packed));
++	uint64_t X: 16;
++	uint64_t Y: 16;
++	uint64_t Z: 32;
+ } ps2_gsreg_xyz __attribute__((packed));
+ 
+ /* XYZF2/3 */
+ typedef struct {
+-	uint64_t X: 16 __attribute__((packed));
+-	uint64_t Y: 16 __attribute__((packed));
+-	uint64_t Z: 24 __attribute__((packed));
+-	uint64_t F:  8 __attribute__((packed));
++	uint64_t X: 16;
++	uint64_t Y: 16;
++	uint64_t Z: 24;
++	uint64_t F:  8;
+ } ps2_gsreg_xyzf __attribute__((packed));
+ 
+ /* ZBUF */
+ typedef struct {
+-	uint64_t ZBP:    9 __attribute__((packed));
+-	uint64_t pad09: 15 __attribute__((packed));
+-	uint64_t PSM:    4 __attribute__((packed));
+-	uint64_t pad28:  4 __attribute__((packed));
+-	uint64_t ZMSK:   1 __attribute__((packed));
+-	uint64_t pad33: 31 __attribute__((packed));
++	uint64_t ZBP:    9;
++	uint64_t pad09: 15;
++	uint64_t PSM:    4;
++	uint64_t pad28:  4;
++	uint64_t ZMSK:   1;
++	uint64_t pad33: 31;
+ } ps2_gsreg_zbuf __attribute__((packed));
+ #define PS2_GS_ZBUF_ZMSK_NOMASK	0
+ #define PS2_GS_ZBUF_ZMSK_MASK	1
+@@ -799,10 +799,10 @@ typedef struct {
+ /* GS special registers */
+ /* BGCOLOR */
+ typedef struct {
+-	uint64_t R:      8 __attribute__((packed));
+-	uint64_t G:      8 __attribute__((packed));
+-	uint64_t B:      8 __attribute__((packed));
+-	uint64_t pad24: 40 __attribute__((packed));
++	uint64_t R:      8;
++	uint64_t G:      8;
++	uint64_t B:      8;
++	uint64_t pad24: 40;
+ } ps2_gssreg_bgcolor __attribute__((packed));
+ 
+ /* BUSDIR */
+@@ -812,21 +812,21 @@ typedef struct {
+ /* CSR */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t SIGNAL:      1 __attribute__((packed)); /* ro */
+-	uint64_t FINISH:      1 __attribute__((packed)); /* ro */
+-	uint64_t HSINT:       1 __attribute__((packed)); /* ro */
+-	uint64_t VSINT:       1 __attribute__((packed)); /* ro */
+-	uint64_t reserved04:  3 __attribute__((packed)); /* ro */
+-	uint64_t pad07:       1 __attribute__((packed));
+-	uint64_t FLUSH:       1 __attribute__((packed)); /* rw */
+-	uint64_t RESET:       1 __attribute__((packed)); /* N/A */
+-	uint64_t pad10:       2 __attribute__((packed));
+-	uint64_t NFIELD:      1 __attribute__((packed)); /* ro */
+-	uint64_t FIELD:       1 __attribute__((packed)); /* ro */
+-	uint64_t FIFO:        2 __attribute__((packed)); /* ro */
+-	uint64_t REV:         8 __attribute__((packed)); /* ro */
+-	uint64_t ID:          8 __attribute__((packed)); /* ro */
+-	uint64_t pad32:      32 __attribute__((packed));
++	uint64_t SIGNAL:      1; /* ro */
++	uint64_t FINISH:      1; /* ro */
++	uint64_t HSINT:       1; /* ro */
++	uint64_t VSINT:       1; /* ro */
++	uint64_t reserved04:  3; /* ro */
++	uint64_t pad07:       1;
++	uint64_t FLUSH:       1; /* rw */
++	uint64_t RESET:       1; /* N/A */
++	uint64_t pad10:       2;
++	uint64_t NFIELD:      1; /* ro */
++	uint64_t FIELD:       1; /* ro */
++	uint64_t FIFO:        2; /* ro */
++	uint64_t REV:         8; /* ro */
++	uint64_t ID:          8; /* ro */
++	uint64_t pad32:      32;
+ } ps2_gssreg_csr __attribute__((packed));
+ #define PS2_GS_CSR_FLUSH		1
+ #define PS2_GS_CSR_FIELD_EVEN		0
+@@ -838,40 +838,40 @@ typedef struct {
+ /* DISPFB1/2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t FBP:    9 __attribute__((packed));
+-	uint64_t FBW:    6 __attribute__((packed));
+-	uint64_t PSM:    5 __attribute__((packed));
+-	uint64_t pad20: 12 __attribute__((packed));
+-	uint64_t DBX:   11 __attribute__((packed));
+-	uint64_t DBY:   11 __attribute__((packed));
+-	uint64_t pad54: 10 __attribute__((packed));
++	uint64_t FBP:    9;
++	uint64_t FBW:    6;
++	uint64_t PSM:    5;
++	uint64_t pad20: 12;
++	uint64_t DBX:   11;
++	uint64_t DBY:   11;
++	uint64_t pad54: 10;
+ } ps2_gssreg_dispfb __attribute__((packed));
+ 
+ /* DISPLAY1/2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t DX:    12 __attribute__((packed));
+-	uint64_t DY:    11 __attribute__((packed));
+-	uint64_t MAGH:   4 __attribute__((packed));
+-	uint64_t MAGV:   2 __attribute__((packed));
+-	uint64_t pad29:  3 __attribute__((packed));
+-	uint64_t DW:    12 __attribute__((packed));
+-	uint64_t DH:    11 __attribute__((packed));
+-	uint64_t pad55:  9 __attribute__((packed));
++	uint64_t DX:    12;
++	uint64_t DY:    11;
++	uint64_t MAGH:   4;
++	uint64_t MAGV:   2;
++	uint64_t pad29:  3;
++	uint64_t DW:    12;
++	uint64_t DH:    11;
++	uint64_t pad55:  9;
+ } ps2_gssreg_display __attribute__((packed));
+ 
+ /* EXTBUF */
+ typedef struct {
+-	uint64_t EXBP:  14 __attribute__((packed));
+-	uint64_t EXBW:   6 __attribute__((packed));
+-	uint64_t FBIN:   2 __attribute__((packed));
+-	uint64_t WFFMD:  1 __attribute__((packed));
+-	uint64_t EMODA:  2 __attribute__((packed));
+-	uint64_t EMODC:  2 __attribute__((packed));
+-	uint64_t pad27:  5 __attribute__((packed));
+-	uint64_t WDX:   11 __attribute__((packed));
+-	uint64_t WDY:   11 __attribute__((packed));
+-	uint64_t pad54: 10 __attribute__((packed));
++	uint64_t EXBP:  14;
++	uint64_t EXBW:   6;
++	uint64_t FBIN:   2;
++	uint64_t WFFMD:  1;
++	uint64_t EMODA:  2;
++	uint64_t EMODC:  2;
++	uint64_t pad27:  5;
++	uint64_t WDX:   11;
++	uint64_t WDY:   11;
++	uint64_t pad54: 10;
+ } ps2_gssreg_extbuf __attribute__((packed));
+ #define PS2_GS_EXTBUF_FBIN_OUT1		0
+ #define PS2_GS_EXTBUF_FBIN_OUT2		1
+@@ -888,20 +888,20 @@ typedef struct {
+ 
+ /* EXTDATA */
+ typedef struct {
+-	uint64_t SX:    12 __attribute__((packed));
+-	uint64_t SY:    11 __attribute__((packed));
+-	uint64_t SMPH:   4 __attribute__((packed));
+-	uint64_t SMPV:   2 __attribute__((packed));
+-	uint64_t pad29:  3 __attribute__((packed));
+-	uint64_t WW:    12 __attribute__((packed));
+-	uint64_t WH:    11 __attribute__((packed));
+-	uint64_t pad55:  9 __attribute__((packed));
++	uint64_t SX:    12;
++	uint64_t SY:    11;
++	uint64_t SMPH:   4;
++	uint64_t SMPV:   2;
++	uint64_t pad29:  3;
++	uint64_t WW:    12;
++	uint64_t WH:    11;
++	uint64_t pad55:  9;
+ } ps2_gssreg_extdata __attribute__((packed));
+ 
+ /* EXTWRITE */
+ typedef struct {
+-	uint64_t EXTWRITE:  1 __attribute__((packed));
+-	uint64_t pad01: 63 __attribute__((packed));
++	uint64_t EXTWRITE:  1;
++	uint64_t pad01: 63;
+ } ps2_gsreg_extwrite __attribute__((packed));
+ #define PS2_GS_EXTWRITE_STOP	0
+ #define PS2_GS_EXTWRITE_START	1
+@@ -909,29 +909,29 @@ typedef struct {
+ /* IMR */
+ /** see ps2event_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t pad00:      8 __attribute__((packed));
+-	uint64_t SIGMSK:     1 __attribute__((packed)); /* ro */
+-	uint64_t FINISHMSK:  1 __attribute__((packed)); /* ro */
+-	uint64_t HSMSK:      1 __attribute__((packed)); /* ro */
+-	uint64_t VSMSK:      1 __attribute__((packed)); /* ro */
+-	uint64_t reserve12:  1 __attribute__((packed)); /* ro */
+-	uint64_t reserve13:  1 __attribute__((packed)); /* ro */
+-	uint64_t reserve14:  1 __attribute__((packed)); /* ro */
+-	uint64_t pad15:     49 __attribute__((packed));
++	uint64_t pad00:      8;
++	uint64_t SIGMSK:     1; /* ro */
++	uint64_t FINISHMSK:  1; /* ro */
++	uint64_t HSMSK:      1; /* ro */
++	uint64_t VSMSK:      1; /* ro */
++	uint64_t reserve12:  1; /* ro */
++	uint64_t reserve13:  1; /* ro */
++	uint64_t reserve14:  1; /* ro */
++	uint64_t pad15:     49;
+ } ps2_gsreg_imr __attribute__((packed));
+ 
+ /* PMODE */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t EN1:        1 __attribute__((packed));
+-	uint64_t EN2:        1 __attribute__((packed));
+-	uint64_t CRTMD:      3 __attribute__((packed));
+-	uint64_t MMOD:       1 __attribute__((packed));
+-	uint64_t AMOD:       1 __attribute__((packed));
+-	uint64_t SLBG:       1 __attribute__((packed));
+-	uint64_t ALP:        8 __attribute__((packed));
+-	uint64_t reserve16: 17 __attribute__((packed));
+-	uint64_t pad33:     31 __attribute__((packed));
++	uint64_t EN1:        1;
++	uint64_t EN2:        1;
++	uint64_t CRTMD:      3;
++	uint64_t MMOD:       1;
++	uint64_t AMOD:       1;
++	uint64_t SLBG:       1;
++	uint64_t ALP:        8;
++	uint64_t reserve16: 17;
++	uint64_t pad33:     31;
+ } ps2_gsreg_pmode __attribute__((packed));
+ #define PS2_GS_PMODE_EN_OFF		0
+ #define PS2_GS_PMODE_EN_ON		1
+@@ -944,17 +944,17 @@ typedef struct {
+ 
+ /* SIGLBLID */
+ typedef struct {
+-	uint64_t SIGID: 32 __attribute__((packed));
+-	uint64_t LBLID: 32 __attribute__((packed));
++	uint64_t SIGID: 32;
++	uint64_t LBLID: 32;
+ } ps2_gsreg_siglblid __attribute__((packed));
+ 
+ /* SMODE2 */
+ /** see ps2gs_{en,jp}.txt **/
+ typedef struct {
+-	uint64_t INT:    1 __attribute__((packed));
+-	uint64_t FFMD:   1 __attribute__((packed));
+-	uint64_t DPMS:   2 __attribute__((packed));
+-	uint64_t pad04: 60 __attribute__((packed));
++	uint64_t INT:    1;
++	uint64_t FFMD:   1;
++	uint64_t DPMS:   2;
++	uint64_t pad04: 60;
+ } ps2_gsreg_smode2 __attribute__((packed));
+ #define PS2_GS_SMODE2_INT_NOINTERLACE	0
+ #define PS2_GS_SMODE2_INT_INTERLACE	1
+diff --git a/png2rgb/png2rgb.c b/png2rgb/png2rgb.c
+index 1861736..ab48728 100644
+--- a/png2rgb/png2rgb.c
++++ b/png2rgb/png2rgb.c
+@@ -4,6 +4,7 @@
+ #include <malloc.h>
+ #include <ctype.h>
+ #include <stdlib.h>
++#include <string.h>
+ 
+  /* The png_jmpbuf() macro, used in error handling, became available in
+   * libpng version 1.0.6.  If you want to be able to run your code with older
+@@ -45,7 +46,7 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 	info_ptr = png_create_info_struct(png_ptr);
+ 	if (info_ptr == NULL) {
+ 		fclose(fp);
+-		png_destroy_read_struct(&png_ptr, png_infopp_NULL, png_infopp_NULL);
++		png_destroy_read_struct(&png_ptr, NULL, NULL);
+ 		return NULL;
+ 	}
+ 
+@@ -54,7 +55,7 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 	 */
+ 	if (setjmp(png_jmpbuf(png_ptr))) {
+ 		/* Free all of the memory associated with the png_ptr and info_ptr */
+-		png_destroy_read_struct(&png_ptr, &info_ptr, png_infopp_NULL);
++		png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+ 		fclose(fp);
+ 		/* If we get here, we had a problem reading the file */
+ 		return NULL;
+@@ -69,29 +70,42 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 	/* Read entire image. */
+ 	/* XXX: Assuming host is litle endian system like ps2 or x86. */
+ 	png_read_png(png_ptr, info_ptr,
+-		PNG_TRANSFORM_SWAP_ENDIAN /* png_transforms */ , png_voidp_NULL);
+-
+-	/* At this point you have read the entire image */
+-	printf("Width: %d Height: %d Depth: %d\n", (int) info_ptr->width,
+-		(int) info_ptr->height, (int) (info_ptr->pixel_depth / 8));
+-
+-	*width = info_ptr->width;
+-	*height = info_ptr->height;
+-	*depth = info_ptr->pixel_depth / 8;
+-	if (info_ptr->color_type == PNG_COLOR_TYPE_RGBA) {
+-		if (info_ptr->pixel_depth != 32) {
+-			fprintf(stderr, "Color depth wrong %d (32 required).\n", info_ptr->pixel_depth);
++		PNG_TRANSFORM_SWAP_ENDIAN /* png_transforms */ , NULL);
++
++	/* At this point you have read the entire image.
++	 *
++	 * libpng 1.5 made png_info opaque, so the original direct member access
++	 * (img_width and friends) no longer compiles. Fetch everything once
++	 * through the accessors; pixel_depth has no accessor and is derived the
++	 * same way libpng did internally: bit_depth * channels.
++	 */
++	png_uint_32 img_width   = png_get_image_width(png_ptr, info_ptr);
++	png_uint_32 img_height  = png_get_image_height(png_ptr, info_ptr);
++	int         color_type  = png_get_color_type(png_ptr, info_ptr);
++	int         pixel_depth = png_get_bit_depth(png_ptr, info_ptr)
++	                          * png_get_channels(png_ptr, info_ptr);
++	png_bytepp  rows        = png_get_rows(png_ptr, info_ptr);
++
++	printf("Width: %d Height: %d Depth: %d\n", (int) img_width,
++		(int) img_height, (int) (pixel_depth / 8));
++
++	*width = img_width;
++	*height = img_height;
++	*depth = pixel_depth / 8;
++	if (color_type == PNG_COLOR_TYPE_RGBA) {
++		if (pixel_depth != 32) {
++			fprintf(stderr, "Color depth wrong %d (32 required).\n", pixel_depth);
+ 
+ 			/* clean up after the read, and free any memory allocated - REQUIRED */
+-			png_destroy_read_struct(&png_ptr, &info_ptr, png_infopp_NULL);
++			png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+ 			return NULL;
+ 		}
+ 	} else {
+-		if (info_ptr->pixel_depth != 24) {
+-			fprintf(stderr, "Color depth wrong %d (24 required).\n", info_ptr->pixel_depth);
++		if (pixel_depth != 24) {
++			fprintf(stderr, "Color depth wrong %d (24 required).\n", pixel_depth);
+ 
+ 			/* clean up after the read, and free any memory allocated - REQUIRED */
+-			png_destroy_read_struct(&png_ptr, &info_ptr, png_infopp_NULL);
++			png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+ 			return NULL;
+ 		}
+ 	}
+@@ -99,20 +113,20 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 	/* close the file */
+ 	fclose(fp);
+ 
+-	dest = malloc(info_ptr->width * info_ptr->height * *depth);
+-	memset(dest, 0, info_ptr->width * info_ptr->height * *depth);
++	dest = malloc(img_width * img_height * *depth);
++	memset(dest, 0, img_width * img_height * *depth);
+ 
+ 	if (dest != NULL) {
+ 		/* Copy picture into destination memory and fix alpha channel. */
+-		for (y = 0; y < info_ptr->height; y++) {
++		for (y = 0; y < img_height; y++) {
+ 			unsigned char *p;
+ 
+-			p = info_ptr->row_pointers[y];
+-			for (x = 0; x < info_ptr->width; x++) {
++			p = rows[y];
++			for (x = 0; x < img_width; x++) {
+ 				unsigned char alpha;
+ 				int pos;
+ 
+-				if (info_ptr->color_type == PNG_COLOR_TYPE_RGBA) {
++				if (color_type == PNG_COLOR_TYPE_RGBA) {
+ 					/* Value range 0 .. 255 changed to range 0 .. 128. */
+ 					alpha = p[3] >> 1;
+ 					if (alpha != 0)
+@@ -122,12 +136,12 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 				}
+ 				alpha = 0x80 - alpha;
+ 
+-				pos = *depth * (y * info_ptr->width + x);
++				pos = *depth * (y * img_width + x);
+ 				/* XXX: Assuming host is litle endian system like ps2 or x86. */
+ 				dest[pos + 0] = p[0];
+ 				dest[pos + 1] = p[1];
+ 				dest[pos + 2] = p[2];
+-				if (info_ptr->color_type == PNG_COLOR_TYPE_RGBA) {
++				if (color_type == PNG_COLOR_TYPE_RGBA) {
+ 					dest[pos + 3] = alpha;
+ 					p += 4;
+ 				} else {
+@@ -138,7 +152,7 @@ uint8_t *loadPng(const char *file_name, uint16_t * width, uint16_t * height,
+ 	}
+ 
+ 	/* clean up after the read, and free any memory allocated - REQUIRED */
+-	png_destroy_read_struct(&png_ptr, &info_ptr, png_infopp_NULL);
++	png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+ 
+ 	/* that's it */
+ 	return dest;
+diff --git a/sharedmem/sharedmem.c b/sharedmem/sharedmem.c
+index 91dc997..caf7a17 100644
+--- a/sharedmem/sharedmem.c
++++ b/sharedmem/sharedmem.c
+@@ -6,6 +6,10 @@
+ 
+ #include <cdvdman.h>
+ #include <sysclib.h>
++/* printf() used to arrive implicitly via one of the headers above. Modern
++ * ps2sdk headers don't pull it in, and -Werror turns the resulting implicit
++ * declaration into a build failure. */
++#include <stdio.h>
+ 
+ #include "sharedmem.h"
+ 

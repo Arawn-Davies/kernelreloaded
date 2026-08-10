@@ -53,3 +53,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Build output — repo-local so it is the same path on any host
+bin/
