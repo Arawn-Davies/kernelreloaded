@@ -6,6 +6,26 @@ the PlayStation 2 Linux bootloader** — building again on a modern toolchain.
 <sub>Looking for <i>kernelloader ps2 build</i>, <i>kernelloader modern
 toolchain</i>, or <i>ps2 linux bootloader</i>? You're in the right place.</sub>
 
+![KernelReloaded UI design target](assets/mockup.png)
+
+> **A design target, not a screenshot.** The starfield and Tux are real and in
+> the build; the rest is where the UI is headed. What that costs splits neatly
+> in two:
+>
+> **Artwork alone** gets the title lockup, the rounded menu highlight, the
+> System Info panel and the ×/△/○ glyphs — each becomes a texture drawn with
+> the `gsKit_prim_sprite_texture` calls the loader already makes. No new
+> rendering code.
+>
+> **New code** is needed for the menu typography. Dynamic text goes through
+> `gsKit_fontm_print_scaled`, and that font lives in the PS2's own BIOS ROM:
+> one typeface, scalable, not swappable. Matching the mockup means
+> pre-rendering a glyph atlas and writing a small text renderer over
+> `sprite_texture`.
+>
+> And it lands **coarser than it looks** — the PS2 outputs 640×448 (NTSC),
+> 640×512 (PAL) or 640×480 (VGA), roughly 2.3× smaller than the image above.
+
 ## Why this exists
 
 kernelloader is the standard way to boot Linux on a PlayStation 2. Release 3.0
@@ -140,6 +160,8 @@ design it shipped with. Flagged in-code and in
 
 - Get `loader/` building; land the `mc0:`/`mc1:` config search
 - Refreshed GUI configurator for kernelloader
+- Work toward the UI at the top of this file: textured chrome first, then a
+  glyph-atlas text renderer to escape the BIOS ROM font
 - Longer term, fold kernelloader's functions into a unified kernelreloaded UI —
   booting Linux, and possibly other \*nixes (a BSD build reportedly exists)
 

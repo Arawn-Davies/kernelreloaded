@@ -58,5 +58,6 @@ dkms.conf
 bin/
 # Windows Zone.Identifier streams and source artwork
 *:Zone.Identifier
+*Zone.Identifier*
 clouds.png
 "ChatGPT Image*"
