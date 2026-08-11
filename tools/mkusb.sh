@@ -17,6 +17,13 @@
 #   vmlinux.gz      the kernel
 #   initrd.gz       the initial ramdisk
 #
+# Nothing else is needed. The SBIOS, the kernel stub, every IOP module and the
+# four intrelay variants are all embedded in kloader.elf as ROM blobs, so there
+# is no TGE/ directory to copy: loader.c asks for "host:TGE/intrelay-direct.irx"
+# but the ROM is searched first, by the path with the device prefix stripped,
+# and that is where it is found. That matters on a console booted from USB,
+# where host: does not exist at all.
+#
 # Usage:
 #   ./tools/mkusb.sh [kernel] [initrd]
 #

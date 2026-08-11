@@ -1666,7 +1666,7 @@ index 498a77a..f4301c5 100644
  #else
  typedef signed long long int64_t;
 diff --git a/loader/Makefile b/loader/Makefile
-index 19b6af1..c94a333 100644
+index 19b6af1..a529eb3 100644
 --- a/loader/Makefile
 +++ b/loader/Makefile
 @@ -22,6 +22,10 @@ endif
@@ -1757,7 +1757,18 @@ index 19b6af1..c94a333 100644
  	ps2kbd.irx
  
  ROM_FILES += $(MODULES) \
-@@ -92,7 +142,9 @@ RGB_FILES = \
+@@ -79,6 +129,10 @@ ROM_FILES += $(MODULES) \
+ 	eromdrvloader.irx \
+ 	TGE/sbios_old.elf \
+ 	TGE/sbios_new.elf \
++	TGE/intrelay-direct.irx \
++	TGE/intrelay-direct-rpc.irx \
++	TGE/intrelay-dev9.irx \
++	TGE/intrelay-dev9-rpc.irx \
+ 	kernel.elf \
+ 	mcicons/icon.sys \
+ 	mcicons/kloader.icn \
+@@ -92,7 +146,9 @@ RGB_FILES = \
  	selected.rgb \
  	unselected.rgb \
  	disc.rgb \
