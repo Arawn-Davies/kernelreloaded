@@ -1,3 +1,39 @@
+diff --git a/TGE/Makefile b/TGE/Makefile
+index 629037b..72469fb 100644
+--- a/TGE/Makefile
++++ b/TGE/Makefile
+@@ -1,7 +1,31 @@
++# intrelay restored. rickgaiser removed it in 4ba4d6e ("Remove irx modules no
++# longer needed", intrelay -> obsolete) alongside dmarelay, eedebug and smaprpc.
++# The last two moved to the linux-firmware-ps2 repo, but intrelay is still
++# REQUIRED by the 2.4.17-era kernels this loader targets -- upstream's own
++# readme says so: "Redirects interrupts from IOP to EE. Required: Yes." Without
++# it the loader gets as far as loading the kernel and then fails on
++# host:TGE/intrelay-direct.irx, which loader.c still references.
++#
++# Four variants, selected by the two switches, all installed into loader/TGE/:
++#   intrelay-direct.irx        no DEV9, no RPC  -- the normal one
++#   intrelay-direct-rpc.irx    slim PSTwo
++#   intrelay-dev9.irx          when ps2dev9/ps2link is used
++#   intrelay-dev9-rpc.irx      both
++#
++# dmarelay is deliberately NOT restored: upstream's readme states "dmarelay.irx
++# from TGE is not working".
+ install:
++	make -C iop/intrelay DEV9_SUPPORT=no RPC_IRQ_SUPPORT=no install
++	make -C iop/intrelay DEV9_SUPPORT=no RPC_IRQ_SUPPORT=yes install
++	make -C iop/intrelay DEV9_SUPPORT=yes RPC_IRQ_SUPPORT=no install
++	make -C iop/intrelay DEV9_SUPPORT=yes RPC_IRQ_SUPPORT=yes install
+ 	make ROM_MODULE_VERSION=old -C sbios install
+ 	make ROM_MODULE_VERSION=new -C sbios install
+ 
+ clean:
+ 	make ROM_MODULE_VERSION=old -C sbios clean
+ 	make ROM_MODULE_VERSION=new -C sbios clean
++	make -C iop/intrelay DEV9_SUPPORT=no RPC_IRQ_SUPPORT=no clean
++	make -C iop/intrelay DEV9_SUPPORT=no RPC_IRQ_SUPPORT=yes clean
++	make -C iop/intrelay DEV9_SUPPORT=yes RPC_IRQ_SUPPORT=no clean
++	make -C iop/intrelay DEV9_SUPPORT=yes RPC_IRQ_SUPPORT=yes clean
 diff --git a/TGE/include/tge_types.h b/TGE/include/tge_types.h
 index aebf339..9727ab1 100644
 --- a/TGE/include/tge_types.h
@@ -25,6 +61,446 @@ index aebf339..9727ab1 100644
  
  #if defined(R5900) || defined(_R5900)
  typedef unsigned int		u128 __attribute__((mode(TI)));
+diff --git a/TGE/iop/intrelay/Makefile b/TGE/iop/intrelay/Makefile
+new file mode 100644
+index 0000000..0699b03
+--- /dev/null
++++ b/TGE/iop/intrelay/Makefile
+@@ -0,0 +1,66 @@
++# _____     ___ ____     ___ ____
++#  ____|   |    ____|   |        | |____|
++# |     ___|   |____ ___|    ____| |    \    PS2DEV Open Source Project.
++#-----------------------------------------------------------------------
++# Copyright 2001-2004.
++# Licenced under Academic Free License version 2.0
++# Review ps2sdk README & LICENSE files for further details.
++
++IOP_BIN_DIR = bin/
++IOP_SRC_DIR = src/
++IOP_INC_DIR = include/
++
++DEV9_SUPPORT = no
++RPC_IRQ_SUPPORT = no
++ifeq ($(RPC_IRQ_SUPPORT),yes)
++IRQ_TYPE=-rpc
++IOP_CFLAGS += -DRPC_IRQ_SUPPORT
++else
++IRQ_TYPE=
++endif
++ifeq ($(DEV9_SUPPORT),yes)
++DEV9_TYPE=-dev9
++
++IOP_CFLAGS += -DDEV9_SUPPORT
++IOP_INCS += -I$(PS2SDKSRC)/iop/dev9/dev9/include
++else
++DEV9_TYPE=-direct
++endif
++IOP_OBJS_DIR = obj$(DEV9_TYPE)$(IRQ_TYPE)/
++IOP_BIN  = bin/intrelay$(DEV9_TYPE)$(IRQ_TYPE).irx
++
++IOP_MODS = intrelay imports usb
++# No addprefix: modern iop/Rules.make already applies IOP_OBJS_DIR itself
++# ("IOP_OBJS := $(IOP_OBJS:%=$(IOP_OBJS_DIR)%)"), so prefixing here too
++# produced obj-direct/obj-direct/intrelay.o and nothing would build.
++IOP_OBJS = $(addsuffix .o, $(IOP_MODS))
++IOP_INCS += -I../../include
++# -Werror dropped: gcc has grown a lot of diagnostics since 2004 and this is
++# 2004 code. Same decision as IOP_WARNFLAGS in the Dockerfile -- warnings
++# still print, they just no longer halt the build.
++IOP_CFLAGS  += -Wall -fno-builtin-printf -fno-builtin-memcpy -Wimplicit-int -Werror-implicit-function-declaration
++IOP_LDFLAGS += -s
++
++install: all
++	mkdir -p ../../../loader/TGE
++	install -m 644 -p $(IOP_BIN) ../../../loader/TGE
++
++# ps2sdk's iop/Rules.make used to supply rules that created these directories;
++# modern ps2sdk does not, so "all" failed with "No rule to make target
++# 'obj-direct/'". The four variants each need their own object directory
++# because they are compiled with different -D flags, so they cannot simply
++# build in place the way modules/SMSCDVD does.
++$(IOP_OBJS_DIR):
++	mkdir -p $@
++
++$(IOP_BIN_DIR):
++	mkdir -p $@
++
++all: $(IOP_OBJS_DIR) $(IOP_BIN_DIR) $(IOP_BIN)
++
++clean:
++	rm -f -r $(IOP_OBJS_DIR) $(IOP_BIN_DIR)
++
++include $(PS2SDKSRC)/Defs.make
++include $(PS2SDKSRC)/iop/Rules.make
++include $(PS2SDKSRC)/iop/Rules.release
+diff --git a/TGE/iop/intrelay/src/imports.lst b/TGE/iop/intrelay/src/imports.lst
+new file mode 100644
+index 0000000..7e82cfd
+--- /dev/null
++++ b/TGE/iop/intrelay/src/imports.lst
+@@ -0,0 +1,38 @@
++intrman_IMPORTS_start
++I_RegisterIntrHandler
++I_EnableIntr
++I_CpuEnableIntr
++intrman_IMPORTS_end
++
++thbase_IMPORTS_start
++I_CreateThread
++I_StartThread
++I_SleepThread
++thbase_IMPORTS_end
++
++stdio_IMPORTS_start
++I_printf
++stdio_IMPORTS_end
++
++#ifdef DEV9_SUPPORT
++dev9_IMPORTS_start
++I_dev9RegisterIntrCb
++I_dev9IntrEnable
++dev9_IMPORTS_end
++#endif
++
++sifman_IMPORTS_start
++I_sceSifInit
++I_sceSifCheckInit
++sifman_IMPORTS_end
++
++sifcmd_IMPORTS_start
++I_sceSifInitRpc
++I_isceSifSendCmd
++I_sceSifSendCmd
++sifcmd_IMPORTS_end
++
++dmacman_IMPORTS_start
++I_dmac_set_dpcr2
++I_dmac_get_dpcr2
++dmacman_IMPORTS_end
+diff --git a/TGE/iop/intrelay/src/intrelay.c b/TGE/iop/intrelay/src/intrelay.c
+new file mode 100644
+index 0000000..2680b67
+--- /dev/null
++++ b/TGE/iop/intrelay/src/intrelay.c
+@@ -0,0 +1,182 @@
++/*
++ * intrelay.c - TGE interupt relay
++ *
++ * Copyright (c) 2003 Marcus R. Brown <mrbrown@0xd6.org>
++ *
++ * See the file LICENSE, located within this directory, for licensing terms.
++ */
++
++#include "types.h"
++#include "defs.h"
++#include "irx.h"
++
++#ifdef DEV9_SUPPORT
++#include "speedregs.h"
++#include "dev9.h"
++#endif
++
++#include "tge_hwdefs.h"
++#include "usb.h"
++#include "irx_imports.h"
++
++IRX_ID("intrelay", 1, 1);
++
++#ifdef RPC_IRQ_SUPPORT
++#define SIF_CMD_INTERRUPT 0x20
++
++#define IRQ_SBUS_AIF    40
++#define IRQ_SBUS_PCIC   41
++#define IRQ_SBUS_USB    42
++#else
++#define SIF_SMFLAG	0xbd000030
++#endif
++
++#ifdef RPC_IRQ_SUPPORT
++typedef struct {
++	struct t_SifCmdHeader    sifcmd;
++	u32 data[16];
++} iop_sifCmdBufferIrq_t;
++
++static iop_sifCmdBufferIrq_t sifCmdBufferIrq __attribute__((aligned(64)));
++#endif
++
++int intr_usb_handler(void *unused)
++{
++#ifndef RPC_IRQ_SUPPORT
++	_sw(TGE_SBUS_IRQ_USB, SIF_SMFLAG);
++
++	_sw(_lw(0xbf801450) | 2, 0xbf801450);
++	_sw(_lw(0xbf801450) & 0xfffffffd, 0xbf801450);
++	_lw(0xbf801450);
++#else
++	sifCmdBufferIrq.data[0] = IRQ_SBUS_USB;
++	isceSifSendCmd(SIF_CMD_INTERRUPT, &sifCmdBufferIrq, 64, NULL,
++                NULL, 0);
++#endif
++	
++	return 1;
++}
++
++int intr_dev9_handler(void *unused)
++{
++#ifndef RPC_IRQ_SUPPORT
++	_sw(TGE_SBUS_IRQ_DEV9, SIF_SMFLAG);
++
++	_sw(_lw(0xbf801450) | 2, 0xbf801450);
++	_sw(_lw(0xbf801450) & 0xfffffffd, 0xbf801450);
++	_lw(0xbf801450);
++#else
++	sifCmdBufferIrq.data[0] = IRQ_SBUS_PCIC;
++	isceSifSendCmd(SIF_CMD_INTERRUPT, &sifCmdBufferIrq, 64, NULL,
++                NULL, 0);
++#endif
++	
++	return 1;
++}
++
++#ifdef DEV9_SUPPORT
++int intr_dev9_handler_dev9(int flag)
++{
++#ifndef RPC_IRQ_SUPPORT
++	_sw(TGE_SBUS_IRQ_DEV9, SIF_SMFLAG);
++
++	_sw(_lw(0xbf801450) | 2, 0xbf801450);
++	_sw(_lw(0xbf801450) & 0xfffffffd, 0xbf801450);
++	_lw(0xbf801450);
++#else
++	sifCmdBufferIrq.data[0] = IRQ_SBUS_PCIC;
++	isceSifSendCmd(SIF_CMD_INTERRUPT, &sifCmdBufferIrq, 64, NULL,
++                NULL, 0);
++#endif
++	
++	return 1;
++}
++#endif
++
++int intr_ilink_handler(void *unused)
++{
++#ifndef RPC_IRQ_SUPPORT
++	_sw(TGE_SBUS_IRQ_ILINK, SIF_SMFLAG);
++
++	_sw(_lw(0xbf801450) | 2, 0xbf801450);
++	_sw(_lw(0xbf801450) & 0xfffffffd, 0xbf801450);
++	_lw(0xbf801450);
++#else
++	sifCmdBufferIrq.data[0] = IRQ_SBUS_AIF; /* XXX: Correct number??? */
++	isceSifSendCmd(SIF_CMD_INTERRUPT, &sifCmdBufferIrq, 64, NULL,
++                NULL, 0);
++#endif
++	
++	return 1;
++}
++
++void nullthread(void *unused)
++{
++	while(1) {
++		SleepThread();
++	}
++}
++
++int _start(int argc, char *argv[])
++{
++	iop_thread_t thread;
++	int res;
++	int locked = 0;
++
++#ifdef RPC_IRQ_SUPPORT
++	if (!sceSifCheckInit())
++		sceSifInit();
++	sceSifInitRpc(0);
++#endif
++
++	if ((res = RegisterIntrHandler(IOP_IRQ_DEV9, 1, intr_dev9_handler, NULL))) {
++		printf("intr 0x%02x, error %d\n", IOP_IRQ_DEV9, res);
++		locked |= 1 << IOP_IRQ_DEV9;
++
++#ifdef DEV9_SUPPORT
++		/* ps2dev9 seems to be running use other way to get interrupts. */
++		dev9RegisterIntrCb(1, intr_dev9_handler_dev9);
++		dev9RegisterIntrCb(0, intr_dev9_handler_dev9);
++
++		dev9IntrEnable(SPD_INTR_ATA0);
++		dev9IntrEnable(SPD_INTR_ATA1);
++#endif
++	}
++
++	if ((res = RegisterIntrHandler(IOP_IRQ_USB, 1, intr_usb_handler, NULL))) {
++		printf("intr 0x%02x, error %d\n", IOP_IRQ_USB, res);
++		locked |= 1 << IOP_IRQ_USB;
++	}
++
++	if ((res = RegisterIntrHandler(IOP_IRQ_ILINK, 1, intr_ilink_handler, NULL))) {
++		printf("intr 0x%02x, error %d\n", IOP_IRQ_ILINK, res);
++		locked |= 1 << IOP_IRQ_ILINK;
++	}
++
++	CpuEnableIntr();
++	if (!(locked & (1 << IOP_IRQ_DEV9))) {
++		EnableIntr(IOP_IRQ_DEV9);
++	}
++	if (!(locked & (1 << IOP_IRQ_USB))) {
++		EnableIntr(IOP_IRQ_USB);
++	}
++	if (!(locked & (1 << IOP_IRQ_ILINK))) {
++		EnableIntr(IOP_IRQ_ILINK);
++	}
++
++	thread.attr = TH_C;
++	thread.option = 0;
++	thread.thread = nullthread;
++	thread.stacksize = 1024;
++	thread.priority = 126;
++
++	if ((res = CreateThread(&thread)) < 0) {
++		printf("cannot create thread\n");
++		return -1;
++	}
++
++	initUSB();
++
++	StartThread(res, NULL);
++	return 0;
++}
+diff --git a/TGE/iop/intrelay/src/irx_imports.h b/TGE/iop/intrelay/src/irx_imports.h
+new file mode 100644
+index 0000000..bfcef62
+--- /dev/null
++++ b/TGE/iop/intrelay/src/irx_imports.h
+@@ -0,0 +1,30 @@
++/*
++ * irx_imports.h - Defines all IRX imports.
++ *
++ * Copyright (c) 2003 Marcus R. Brown <mrbrown@0xd6.org>
++ *
++ * See the file LICENSE included with this distribution for licensing terms.
++ */
++
++#ifndef IOP_IRX_IMPORTS_H
++#define IOP_IRX_IMPORTS_H
++
++#include "irx.h"
++
++/* Please keep these in alphabetical order!  */
++#ifdef DEV9_SUPPORT
++#include "dev9.h"
++#endif
++#include "dmacman.h"
++#include "intrman.h"
++#include "loadcore.h"
++#include "sifman.h"
++#include "sifrpc.h"
++#include "stdio.h"
++#include "sysclib.h"
++#include "sysmem.h"
++#include "thbase.h"
++#include "thevent.h"
++#include "thsemap.h"
++
++#endif /* IOP_IRX_IMPORTS_H */
+diff --git a/TGE/iop/intrelay/src/usb.c b/TGE/iop/intrelay/src/usb.c
+new file mode 100644
+index 0000000..20143a1
+--- /dev/null
++++ b/TGE/iop/intrelay/src/usb.c
+@@ -0,0 +1,82 @@
++/* Copyright (c) 2009 Mega Man, copied code from usb driver in ps2sdk. */
++#include <tamtypes.h>
++#include <stdio.h>
++
++#include "usb.h"
++#include "irx_imports.h"
++
++/** UB OHCI register base address. */
++#define USB_OHCI_REGBASE 0xBF801600
++#define USB_REG_UNKNOWN1680 ((volatile u16 *) 0xbf801680)
++
++#define BIT(x) (1 << (x))
++#define OHCI_COM_HCR BIT(0)
++
++typedef struct _hcTd {
++	u32 HcArea;
++	void   *curBufPtr;
++	struct _hcTd *next;
++	void   *bufferEnd;
++} HcTD_t __attribute__ ((packed));
++
++typedef struct _hcEd {
++	u16 hcArea;
++	u16 maxPacketSize;
++	HcTD_t  *tdTail;
++	HcTD_t  *tdHead;
++	struct _hcEd *next;
++} HcED_t __attribute__ ((packed));
++
++typedef struct {
++	volatile HcED_t   *InterruptTable[32];
++	volatile u16 FrameNumber;
++	volatile u16 pad;
++	volatile HcTD_t   *DoneHead;
++	volatile u8  reserved[116];
++	volatile u32 pad2; // expand struct to 256 bytes for alignment
++} HcCA_t __attribute__ ((packed));
++
++typedef struct {
++	volatile u32 HcRevision;
++	volatile u32 HcControl;
++	volatile u32 HcCommandStatus;
++	volatile u32 HcInterruptStatus;
++	volatile u32 HcInterruptEnable;
++	volatile u32 HcInterruptDisable;
++	volatile HcCA_t  *HcHCCA;
++	volatile HcED_t  *HcPeriodCurrentEd;
++	volatile HcED_t  *HcControlHeadEd;
++	volatile HcED_t  *HcControlCurrentEd;
++	volatile HcED_t  *HcBulkHeadEd;
++	volatile HcED_t  *HcBulkCurrentEd;
++	volatile u32 HcDoneHead;
++	volatile u32 HcFmInterval;
++	volatile u32 HcFmRemaining;
++	volatile u32 HcFmNumber;
++	volatile u32 HcPeriodicStart;
++	volatile u32 HcLsThreshold;
++	volatile u32 HcRhDescriptorA;
++	volatile u32 HcRhDescriptorB;
++	volatile u32 HcRhStatus;
++	volatile u32 HcRhPortStatus[2];
++} OhciRegs_t __attribute__ ((packed));
++
++/** Initialize USB for later use and reset OHCI chip. */
++void initUSB(void)
++{
++	volatile OhciRegs_t *ohciRegs = (OhciRegs_t *) USB_OHCI_REGBASE;
++
++	printf("Host Controller...\n");
++	ohciRegs->HcInterruptDisable = ~0;
++	ohciRegs->HcCommandStatus = OHCI_COM_HCR;
++	ohciRegs->HcControl = 0;
++	while (ohciRegs->HcCommandStatus & OHCI_COM_HCR) {
++		// add timeout stuff
++	}
++
++	printf("HC reset done\n");
++
++	/* The following lines will activate the OHCI chip. */
++	dmac_set_dpcr2(dmac_get_dpcr2() | 0x08000000);
++	*USB_REG_UNKNOWN1680 = 1;
++}
+diff --git a/TGE/iop/intrelay/src/usb.h b/TGE/iop/intrelay/src/usb.h
+new file mode 100644
+index 0000000..33c99e6
+--- /dev/null
++++ b/TGE/iop/intrelay/src/usb.h
+@@ -0,0 +1,6 @@
++#ifndef _USB_H_
++#define _USB_H_
++
++void initUSB(void);
++
++#endif
 diff --git a/TGE/sbios/Makefile b/TGE/sbios/Makefile
 index 1fcf127..0017602 100644
 --- a/TGE/sbios/Makefile
@@ -174,6 +650,27 @@ index 0000000..e07bdc7
 +
 +	return (int)(unsigned char)*s1 - (int)(unsigned char)*s2;
 +}
+diff --git a/config.mk b/config.mk
+index f8ba16a..4343aef 100644
+--- a/config.mk
++++ b/config.mk
+@@ -15,6 +15,16 @@ RESET_IOP = yes
+ # reset is done):
+ LOAD_PS2LINK = no
+ 
++# Load the MX4SIO block device driver (SD card in a memory card slot).
++#
++# Default no. mx4sio_bd drives SIO2 directly rather than through sio2man, and
++# with no adapter fitted it does not return -- it hangs the module loading loop
++# and nothing after it is ever loaded, so the loader never reaches its menu.
++# That is what happens under PCSX2, which does not emulate the adapter at all.
++#
++# Set to yes only for a build destined for a console that has the adapter.
++MX4SIO = no
++
+ # Use new ROM modules in loader.
+ NEW_ROM_MODULES = no
+ 
 diff --git a/kernel/Makefile b/kernel/Makefile
 index 5adc7ff..8456f9a 100644
 --- a/kernel/Makefile
@@ -1169,10 +1666,21 @@ index 498a77a..f4301c5 100644
  #else
  typedef signed long long int64_t;
 diff --git a/loader/Makefile b/loader/Makefile
-index 19b6af1..69518ba 100644
+index 19b6af1..c94a333 100644
 --- a/loader/Makefile
 +++ b/loader/Makefile
-@@ -52,7 +52,12 @@ EE_FLAGS += $(shell if [ -e "$(PS2LINUXDVD)/pbpx_955.09" ]; then echo -DRTE; fi)
+@@ -22,6 +22,10 @@ endif
+ ifeq ($(RESET_IOP),yes)
+ EE_FLAGS += -DRESET_IOP
+ endif
++ifeq ($(MX4SIO),yes)
++EE_FLAGS += -DMX4SIO_SUPPORT
++MODULES += mx4sio_bd.irx
++endif
+ ifeq ($(SCREENSHOT),yes)
+ EE_FLAGS += -DSCREENSHOT
+ endif
+@@ -52,12 +56,58 @@ EE_FLAGS += $(shell if [ -e "$(PS2LINUXDVD)/pbpx_955.09" ]; then echo -DRTE; fi)
  
  EE_FLAGS += -I$(PS2SDK)/ports/include
  EE_FLAGS += -I../crc32gen/
@@ -1183,32 +1691,528 @@ index 19b6af1..69518ba 100644
 +# Warnings still print. -Werror-implicit-function-declaration is kept below
 +# because that one catches real missing-header bugs rather than style.
 +# EE_FLAGS += -Werror
++# Modern ps2sdk guards fileXio.h / fileXio_rpc.h / iox_stat.h with
++#   #ifndef NEWLIB_PORT_AWARE
++#   #error "Using fio/fileXio functions directly in the newlib port ..."
++# It is an opt-in acknowledgement, not a deprecation: the concern is that
++# newlib's POSIX layer and the fileXio RPC layer each keep their own idea of
++# open files, so mixing them on the SAME file can desynchronise. kernelloader
++# does not do that -- it uses fileXio only for fileXioInit/fileXioMkdir/umount
++# style operations and plain stdio (fopen/fread) for file contents. Six files
++# need it: configuration.cpp, loadermenu.cpp, modules.c, getelf.c, getrte.c,
++# getsbios.c.
++#
++# Defining it is the intended way to say "yes, deliberately". Porting those
++# calls to POSIX equivalents would be the larger, more correct change, and is
++# worth revisiting once the loader runs -- see docs/porting-notes.md.
++EE_FLAGS += -DNEWLIB_PORT_AWARE
  
  EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
  
-@@ -92,7 +97,7 @@ RGB_FILES = \
+-EE_CXXFLAGS = $(EE_FLAGS) -D_STLP_NO_NAMESPACES -D_NOTHREADS -D_STLP_NO_EXCEPTIONS -D_STLP_USE_NEWALLOC -D_STLP_HAS_WCHAR_T -D_STLP_NO_IOSTREAMS -Dwint_t=int -I$(PS2SDK)/ports/include/stlport/
+-
++# The -D_STLP_* defines, -Dwint_t=int and the stlport include path are all
++# vestigial: modern ps2sdk ships no STLport at all (that directory does not
++# exist, and citronalco's fix already dropped -lstlport in favour of the real
++# std:: headers). The _STLP_* ones are harmless no-ops without the library, but
++# -Dwint_t=int is actively fatal -- gcc 15's stddef.h does
++#     typedef __WINT_TYPE__ wint_t;
++# which the command-line define rewrites to "typedef unsigned int int;",
++# giving "multiple types in one declaration" before any source is read.
++# Dropped along with the dead -I; the _STLP_* defines are left alone to keep
++# this diff to what actually breaks.
++EE_CXXFLAGS = $(EE_FLAGS) -D_STLP_NO_NAMESPACES -D_NOTHREADS -D_STLP_NO_EXCEPTIONS -D_STLP_USE_NEWALLOC -D_STLP_HAS_WCHAR_T -D_STLP_NO_IOSTREAMS
++
++# ps2link.irx and ps2smap.irx are absent from this list because modern ps2sdk
++# ships neither. ps2link moved out of ps2sdk into its own project
++# (ps2dev/ps2link); ps2smap.irx was renamed and restructured -- the SMAP driver
++# is now smap.irx / smap-ps2ip.irx / smap-modular-netman.irx, which take
++# different module arguments than the "ip=... netmask=... gateway=..." string
++# getPS2MAPParameter() builds, so substituting one blind would load a driver
++# that silently ignores its configuration.
++#
++# The matching moduleList[] entries in modules.c are removed to match. Both were
++# .network = -1, so they only ever loaded on consoles where hasNetworkSupport()
++# is true, and upstream's readme.txt warns that these IOP network modules are
++# mutually exclusive with Linux's own SMAP driver -- the system hangs if the IOP
++# touches the network. Booting Linux from mc/USB does not need either.
++#
++# Restoring network + ps2link support means vendoring a ps2link.irx and porting
++# getPS2MAPParameter() to the modern smap argument format.
+ MODULES = \
+ 	ps2dev9.irx \
+ 	fileXio.irx \
+@@ -66,11 +116,11 @@ MODULES = \
+ 	poweroff.irx \
+ 	ps2ip.irx \
+ 	ps2http.irx \
+-	ps2link.irx \
+-	ps2smap.irx \
+ 	sharedmem.irx \
+ 	usbd.irx \
+-	usbhdfsd.irx \
++	bdm.irx \
++	bdmfs_fatfs.irx \
++	usbmass_bd.irx \
+ 	ps2kbd.irx
+ 
+ ROM_FILES += $(MODULES) \
+@@ -92,7 +142,9 @@ RGB_FILES = \
  	selected.rgb \
  	unselected.rgb \
  	disc.rgb \
 -	cloud.rgb
-+	starfield.rgb
++	starfield.rgb \
++	title.rgb \
++	bottombar.rgb
  
  RGB_HEADERS = \
  	$(subst .rgb,.h, $(RGB_FILES))
+diff --git a/loader/Makefile.eeglobal b/loader/Makefile.eeglobal
+index 7fbddfa..9a65e28 100644
+--- a/loader/Makefile.eeglobal
++++ b/loader/Makefile.eeglobal
+@@ -49,7 +49,13 @@ EE_CXX_COMPILE = $(EE_CXX) $(EE_CXXFLAGS) $(EE_INCS)
+ %.o : %.s
+ 	$(EE_AS) $(EE_ASFLAGS) $< -o $@
+ 
+-$(EE_BIN) : $(EE_OBJS) $(PS2SDK)/ee/startup/crt0.o
++# The crt0.o prerequisite is dropped: modern ps2sdk no longer ships a prebuilt
++# $(PS2SDK)/ee/startup/crt0.o (that directory now contains only "linkfile"),
++# and gcc supplies the startup code itself. Note the recipe below never
++# referenced crt0.o in the first place -- it was a prerequisite only, so this
++# changes nothing about how the ELF is linked. The commented-out variant below,
++# which did pass it explicitly, is left as upstream had it.
++$(EE_BIN) : $(EE_OBJS)
+ 	$(EE_CC) -Tlinkfile $(EE_LDFLAGS) \
+ 		-o $(EE_BIN) $(EE_OBJS) $(EE_LIBS)
+ #$(EE_BIN) : $(EE_OBJS) $(PS2SDK)/ee/startup/crt0.o
+diff --git a/loader/configuration.cpp b/loader/configuration.cpp
+index b0f016d..2be4e51 100644
+--- a/loader/configuration.cpp
++++ b/loader/configuration.cpp
+@@ -1,5 +1,8 @@
+ /* Copyright (c) 2007 Mega Man */
+ #include <vector>
++/* FILE, fopen/fgets/fwrite/fprintf/snprintf. Must precede rom.h, which uses
++ * FILE in a prototype without including stdio.h itself. */
++#include <stdio.h>
+ 
+ #include "configuration.h"
+ #include "graphic.h"
+diff --git a/loader/configuration.h b/loader/configuration.h
+index 47ce02d..841f570 100644
+--- a/loader/configuration.h
++++ b/loader/configuration.h
+@@ -8,6 +8,19 @@
+ #define CONFIG_DIR "mc0:kloader"
+ /** Directory where configuration is stored on second mc. */
+ #define CONFIG_DIR2 "mc1:kloader"
++/** Configuration on the second memory card.
++ *
++ * CONFIG_DIR2 existed but had no matching file define, because nothing ever
++ * loaded from the second card -- it was referenced only by saveMcIcons(). This
++ * is the mc1 half of the startup search. */
++#define CONFIG_FILE2 CONFIG_DIR2 "/config.txt"
++/** Configuration served over host:, for development.
++ *
++ * ps2client (and PCSX2, which maps host: to the directory the ELF was loaded
++ * from) can serve this without any memory card or USB stick present. Tried
++ * last, and simply fails to open on a real console, so it costs nothing
++ * there. */
++#define HOST_CONFIG_FILE "host:config.txt"
+ /** Config file used for DVDs. */
+ #define DVD_CONFIG_FILE "cdfs:config.txt"
+ /** Config file used for NetSurf from USB storage device. */
+diff --git a/loader/crc32check.c b/loader/crc32check.c
+index 4bc9a21..ca33e95 100644
+--- a/loader/crc32check.c
++++ b/loader/crc32check.c
+@@ -1,6 +1,8 @@
+ #include <stdio.h>
+ #include <graphic.h>
+ #include <sio.h>
++/* sio_printf() -- removed from ps2sdk's sio.h, reimplemented in kprint.c. */
++#include "kprint.h"
+ 
+ #include "stdint.h"
+ #include "crc32gen.h"
+@@ -13,7 +15,14 @@ void _etext(void);
+ void _frodata(void);
+ void _erodata(void);
+ 
+-const crc32_section_t crc[] __attribute__ ((__section__ (".crc32"))) = {
++/* MUST be volatile. This table is patched AFTER linking by crc32gen, which
++ * writes the real CRC into the .crc32 section of the ELF. The initialiser below
++ * leaves .crc implicitly 0, so a plain "const" array lets gcc 15 constant-fold
++ * every read of crc[i].crc to literal 0 and never emit a load at all -- the
++ * check then always fails with "expected 0x00000000" no matter what crc32gen
++ * wrote. volatile forces the runtime load that makes post-link patching work.
++ * Older toolchains happened to keep the load; this is not something to rely on. */
++volatile const crc32_section_t crc[] __attribute__ ((__section__ (".crc32"))) = {
+ 	{ .section = ".text", .start = (uint32_t) &_ftext, .end = (uint32_t) &_etext },
+ 	{ .section = ".rodata", .start = (uint32_t) &_frodata, .end = (uint32_t) &_erodata },
+ };
+diff --git a/loader/getelf.c b/loader/getelf.c
+index 0fab73f..4cb2fbc 100644
+--- a/loader/getelf.c
++++ b/loader/getelf.c
+@@ -6,6 +6,9 @@
+ #include <string.h>
+ #include <elf.h>
+ #include <unistd.h>
++/* fioRemove()/fioRmdir(): still in ps2sdk, but no longer reached
++ * transitively. Needs NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <fileio.h>
+ #include "fileXio_rpc.h"
+ 
+ #include "SMS_CDVD.h"
+diff --git a/loader/getrte.c b/loader/getrte.c
+index 22f3103..668d594 100644
+--- a/loader/getrte.c
++++ b/loader/getrte.c
+@@ -1,5 +1,8 @@
+ #include <stdio.h>
+ #include <unistd.h>
++/* fioRemove()/fioRmdir(): still in ps2sdk, but no longer reached
++ * transitively. Needs NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <fileio.h>
+ #include "fileXio_rpc.h"
+ 
+ #include "SMS_CDVD.h"
+diff --git a/loader/getsbios.c b/loader/getsbios.c
+index 79f6d01..dea66ee 100644
+--- a/loader/getsbios.c
++++ b/loader/getsbios.c
+@@ -5,6 +5,9 @@
+ #include <malloc.h>
+ #include <string.h>
+ #include <unistd.h>
++/* fioRemove()/fioRmdir(): still in ps2sdk, but no longer reached
++ * transitively. Needs NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <fileio.h>
+ #include "fileXio_rpc.h"
+ 
+ #include "SMS_CDVD.h"
 diff --git a/loader/graphic.cpp b/loader/graphic.cpp
-index 00908f2..0728e66 100644
+index 00908f2..117bc65 100644
 --- a/loader/graphic.cpp
 +++ b/loader/graphic.cpp
-@@ -106,7 +106,7 @@ static GSTEXTURE *texPenguin = NULL;
+@@ -55,8 +55,15 @@ static u64 TexCol;
+ /** Red text colour. */
+ static u64 TexRed;
+ 
+-/** Black text colour. */
+-static u64 TexBlack;
++/** Colour for the status/hint text along the bottom of the screen.
++ *
++ * This was black, which worked while the background was a flat blue fill. The
++ * background is now a full-screen starfield texture, so black text over it is
++ * effectively invisible. White reads against the dark sky and the mountains
++ * under both of the positions these strings use (left edge and right edge);
++ * the bright horizon glow sits between them. Renamed from TexBlack because the
++ * old name no longer describes it. */
++static u64 TexInfo;
+ 
+ /** Font used for printing text. */
+ static GSFONTM *gsFont;
+@@ -69,8 +76,13 @@ static const char *statusMessage = NULL;
+ /** Percentage for loading file shown as progress bar. */
+ static int loadPercentage = 0;
+ 
+-/** Scale factor for font. */
+-static float scale = 1.0f;
++/** Scale factor for font.
++ *
++ * Drives the title, status line and error text. Reduced from 1.0 -- the BIOS
++ * ROM font is chunky at full size and the extra headroom keeps long status
++ * strings on one line. menuEntry.cpp carries its own scale for menu items and
++ * was reduced by the same proportion. */
++static float scale = 0.70f;
+ 
+ /** Ring buffer with error messages. */
+ static const char *errorMessage[MAX_MESSAGES] = {
+@@ -106,9 +118,22 @@ static GSTEXTURE *texPenguin = NULL;
  
  static GSTEXTURE *texDisc = NULL;
  
 -static GSTEXTURE *texCloud = NULL;
 +static GSTEXTURE *texStarfield = NULL;
  
- static int reservedEndOfDisplayY = 42;
+-static int reservedEndOfDisplayY = 42;
++/** Title lockup: "KernelReloaded" wordmark plus its subtitle, pre-rendered
++ * as artwork rather than composed from the BIOS ROM font. */
++static GSTEXTURE *texTitle = NULL;
++
++/** Bottom button bar: the X/triangle/circle glyphs and their labels. */
++static GSTEXTURE *texBottomBar = NULL;
++
++/** Pixels reserved at the bottom of the display.
++ *
++ * Everything anchored to the bottom -- the contextual hint lines, the mode and
++ * build-state block, and the maxY passed to printTextBlock() -- is measured up
++ * from Height minus this. Raised from 42 to clear the 34px button bar that now
++ * occupies the bottom edge, which the hints would otherwise be drawn over. */
++static int reservedEndOfDisplayY = 72;
  
-@@ -379,7 +379,7 @@ void graphic_common(void)
+ static bool usePad = false;
+ 
+@@ -118,8 +143,6 @@ int scrollPos = 0;
+ 
+ int inputScrollPos = 0;
+ 
+-u32 globalVram;
+-
+ u32 modeList[] = {
+ 	GS_AUTO_DETECT,
+ 	GS_MODE_VGA_640_60,
+@@ -129,6 +152,9 @@ u32 modeList[] = {
+ 	GS_MODE_DTV_480P,
+ 	GS_MODE_NTSC,
+ 	GS_MODE_PAL,
++	GS_MODE_DTV_576P,
++	GS_MODE_DTV_720P,
++	GS_MODE_DTV_1080I,
+ };
+ int currentMode = 0;
+ int lastMode = 0;
+@@ -142,6 +168,9 @@ int frequenzy[] = {
+ 	60,
+ 	60,
+ 	50,
++	50,	/* 576P */
++	60,	/* 720P */
++	60,	/* 1080I */
+ };
+ 
+ const char *modeDescription[] = {
+@@ -153,6 +182,9 @@ const char *modeDescription[] = {
+ 	"480P",
+ 	"NTSC",
+ 	"PAL",
++	"576P",
++	"720P",
++	"1080I",
+ };
+ 
+ extern "C" {
+@@ -160,6 +192,88 @@ extern "C" {
+ 	int yoffset = 0;
+ }
+ 
++/** Apply the selected entry of modeList[] to a GSGLOBAL.
++ *
++ * Setting gsGlobal->Mode alone is not enough. gsKit_init_global() fills in
++ * Width, Height, Interlace and Field for the mode it detected -- PAL or NTSC --
++ * and gsKit_init_screen() then builds the display from those, not from Mode.
++ * Overwriting Mode by itself therefore left every mode running at the detected
++ * geometry: kernelloader reported "Set screen mode to 640x512" whichever entry
++ * was chosen, and the mismatch between the requested mode and the PAL-sized
++ * framebuffer showed as a black screen on several of them.
++ *
++ * The four fields have to move together, which is what ps2oom's
++ * doomgeneric_ps2_gs.c does when it selects a mode explicitly.
++ *
++ * GS_AUTO_DETECT resolves through gsKit_detect_signal(), which only ever
++ * answers NTSC or PAL.
++ */
++static void applyVideoMode(GSGLOBAL *g, int modeIndex)
++{
++	u32 mode;
++
++	if (modeList[modeIndex] == GS_AUTO_DETECT) {
++		mode = gsKit_detect_signal();
++	} else {
++		mode = modeList[modeIndex];
++	}
++
++	g->Mode = mode;
++
++	switch (mode) {
++	case GS_MODE_PAL:
++		g->Interlace = GS_INTERLACED;
++		g->Field = GS_FIELD;
++		g->Width = 640;
++		g->Height = 512;
++		break;
++	case GS_MODE_NTSC:
++		g->Interlace = GS_INTERLACED;
++		g->Field = GS_FIELD;
++		g->Width = 640;
++		g->Height = 448;
++		break;
++	case GS_MODE_DTV_576P:
++		g->Interlace = GS_NONINTERLACED;
++		g->Field = GS_FRAME;
++		g->Width = 640;
++		g->Height = 512;
++		break;
++	case GS_MODE_DTV_720P:
++		/* 1280x720 will not fit VRAM at 32bpp: two buffers alone would be
++		 * 7.4 MB of the 4 MB available. CT16 halves that to 3.7 MB, which
++		 * fits but leaves very little for textures. */
++		g->Interlace = GS_NONINTERLACED;
++		g->Field = GS_FRAME;
++		g->Width = 1280;
++		g->Height = 720;
++		g->PSM = GS_PSM_CT16;
++		break;
++	case GS_MODE_DTV_1080I:
++		/* Even at CT16 a 1280x1080 pair does not fit, so this mode runs
++		 * single-buffered. Expect tearing; it is the only way it fits. */
++		g->Interlace = GS_INTERLACED;
++		g->Field = GS_FIELD;
++		g->Width = 1280;
++		g->Height = 1080;
++		g->PSM = GS_PSM_CT16;
++		g->DoubleBuffering = GS_SETTING_OFF;
++		break;
++	default:
++		/* The VGA modes and DTV 480P are all progressive 640x480. */
++		g->Interlace = GS_NONINTERLACED;
++		g->Field = GS_FRAME;
++		g->Width = 640;
++		g->Height = 480;
++		break;
++	}
++
++	/* PSM and DoubleBuffering are only overridden above, never restored:
++	 * changeMode() builds a fresh GSGLOBAL with gsKit_init_global() every time,
++	 * so each call starts from gsKit's defaults and the HD settings cannot leak
++	 * into a subsequent SD mode. */
++}
++
+ void check_screen_offsets(void)
+ {
+ 	kprintf("Set screen mode to %ux%u\n", gsGlobal->Width, gsGlobal->Height);
+@@ -170,94 +284,42 @@ void check_screen_offsets(void)
+ 	}
+ }
+ 
+-static void gsKit_texture_upload_inline(GSGLOBAL *gsGlobal, GSTEXTURE *Texture)
+-{
+-	static u32 *lastMem;
+-	static u32 lastVram;
+-
+-	/* Check if already uploaded the last time. */
+-	if ((lastMem != Texture->Mem) || (lastVram != Texture->Vram)) {
+-		/* Texture was not uploaded, need to upload it. */
+-		gsKit_setup_tbw(Texture);
+-
+-		if (Texture->PSM == GS_PSM_T8)
+-		{
+-			gsKit_texture_send_inline(gsGlobal, Texture->Mem, Texture->Width, Texture->Height, Texture->Vram, Texture->PSM, Texture->TBW, GS_CLUT_TEXTURE);
+-			gsKit_texture_send_inline(gsGlobal, Texture->Clut, 16, 16, Texture->VramClut, Texture->ClutPSM, 1, GS_CLUT_PALLETE);
+-
+-		}
+-		else if (Texture->PSM == GS_PSM_T4)
+-		{
+-			gsKit_texture_send_inline(gsGlobal, Texture->Mem, Texture->Width, Texture->Height, Texture->Vram, Texture->PSM, Texture->TBW, GS_CLUT_TEXTURE);
+-			gsKit_texture_send_inline(gsGlobal, Texture->Clut, 8,  2, Texture->VramClut, Texture->ClutPSM, 1, GS_CLUT_PALLETE);
+-		}
+-		else
+-		{
+-			gsKit_texture_send_inline(gsGlobal, Texture->Mem, Texture->Width, Texture->Height, Texture->Vram, Texture->PSM, Texture->TBW, GS_CLUT_NONE);
+-		}
+-	}
+-}
+-
++/** Draw a texture.
++ *
++ * Rewritten for modern gsKit, which gained a texture manager
++ * (gsKit_TexManager_*) after this code was written. The original did its own
++ * VRAM management: gsKit_vram_alloc() a permanent slot for small textures and
++ * upload once, or share one globalVram scratch buffer for large ones and
++ * re-upload them inline in height-sliced chunks on every frame.
++ *
++ * That workflow no longer draws anything. gsKit now expects a texture to be
++ * bound through gsKit_TexManager_bind() before use; the manager owns VRAM,
++ * decides what to upload and evicts under pressure. A caller-populated
++ * Texture->Vram is not what it consults, so the textures were silently never
++ * present when the sprite was drawn -- no error, no VRAM failure, and
++ * independent of pixel format or texture size, which is exactly what we saw.
++ *
++ * The reference for this is ps2oom's doomgeneric_ps2_gs.c, which drives the
++ * same gsKit on the same toolchain: init the manager once, then bind before
++ * each draw and call gsKit_TexManager_nextFrame() after the flip.
++ *
++ * The slicing machinery is gone with it. The manager handles textures too
++ * large to keep resident, so the 731x512 starfield no longer needs manual
++ * chunking -- which also retires the buggy gsKit_texture_upload_inline()
++ * helper whose lastMem/lastVram cache was never actually assigned.
++ */
+ void paintTexture(GSTEXTURE *tex, int x, int y, int z)
+ {
+-	if (tex != NULL) {
+-		if (tex->Vram != GSKIT_ALLOC_ERROR) {
+-			u32 size;
+-
+-			size = gsKit_texture_size_ee(tex->Width, tex->Height, tex->PSM);
+-			if (size <= SMALL_TEXT_SIZE) {
+-				/* No uploading required for small textures. */
+-				gsKit_prim_sprite_texture(gsGlobal, tex,
+-					x, y, 0, 0, x + tex->Width, y + tex->Height,
+-					tex->Width, tex->Height, z,
+-					GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00));
+-			} else {
+-				GSTEXTURE uploadTex;
+-				u32 slice;
+-				u32 offset;
+-				u32 vramSize;
+-
+-				/* Need to upload texture, because it is too big for cache. */
+-				slice = tex->Height;
+-				vramSize = gsKit_texture_size(tex->Width, slice, tex->PSM);
+-				while (vramSize > MAX_TEX_SIZE) {
+-					slice = (slice + 1) >> 1;
+-					do {
+-						size = gsKit_texture_size_ee(tex->Width, slice, tex->PSM);
+-						vramSize = gsKit_texture_size(tex->Width, slice, tex->PSM);
+-						if (slice == 0) {
+-							kprintf("minimum vramSize 0x%08x\n", vramSize);
+-						}
+-						if (size & 15) {
+-							/* Get next 16 byte aligned size. */
+-							/* DMA will only support a start address which is 16 Byte aligned. */
+-							/* The start address of the next block is calculated by adding slice. */
+-							slice++;
+-						}
+-					} while (size & 15); /* Wait until size is 16 Byte aligned. */
+-				}
+-
+-				uploadTex = *tex;
+-				uploadTex.Height = slice;
++	if (tex == NULL) {
++		return;
++	}
+ 
+-				/* Upload image as slices. */
+-				for (offset = 0; offset < tex->Height; offset += slice) {
+-					u32 remaining;
++	gsKit_TexManager_bind(gsGlobal, tex);
+ 
+-					remaining = tex->Height - offset;
+-					if (remaining < slice) {
+-						uploadTex.Height = remaining;
+-					}
+-					gsKit_texture_upload_inline(gsGlobal, &uploadTex);
+-					gsKit_prim_sprite_texture(gsGlobal, &uploadTex,
+-						x, y + offset, 0, 0, x + uploadTex.Width, y + offset + uploadTex.Height,
+-						uploadTex.Width, uploadTex.Height, z,
+-						GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00));
+-					uploadTex.Mem = (u32 *) (((u32) uploadTex.Mem) + size);
+-				}
+-			}
+-		}
+-	}
++	gsKit_prim_sprite_texture(gsGlobal, tex,
++		x, y, 0, 0, x + tex->Width, y + tex->Height,
++		tex->Width, tex->Height, z,
++		GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00));
+ }
+ 
+ static char infoBuffer[MAX_INFO_BUFFER];
+@@ -379,33 +441,43 @@ void graphic_common(void)
  	gsKit_clear(gsGlobal, Blue);
  
  	/* Paint background. */
@@ -1217,21 +2221,422 @@ index 00908f2..0728e66 100644
  
  	paintTexture(texPenguin, xoffset + 5, yoffset + 10, 1);
  
-@@ -728,7 +728,7 @@ Menu *graphic_main(void)
+-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 110, yoffset + 50, 3, scale, TexCol,
+-		"Kernelloader " LOADER_VERSION
+-#ifdef RESET_IOP
+-		"R"
+-#endif
+-#ifdef SCREENSHOT
+-		"S"
+-#endif
+-#ifdef NEW_ROM_MODULES
+-		"M"
+-#endif
+-#ifdef OLD_ROM_MODULES
+-		"O"
+-#endif
+-#ifdef SHARED_MEM_DEBUG
+-		"S"
+-#endif
+-	);
+-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY - 15, 3, 0.5, TexBlack,
++	/* The build-option suffix letters that used to follow the version here --
++	 * R (RESET_IOP), S (SCREENSHOT), M/O (NEW/OLD_ROM_MODULES), S
++	 * (SHARED_MEM_DEBUG), which rendered as "3.0RSOS" -- have been dropped so
++	 * the title reads as a plain version. Nothing is lost: Advanced Menu ->
++	 * Versions -> "Kernelloader Version" spells every one of them out in full
++	 * ("RESET_IOP SCREENSHOT OLD_ROM_MODULES ..."), which is far more use than
++	 * a run of single letters. */
++
++	/* Title lockup and bottom button bar are artwork, not text: the BIOS ROM
++	 * font is one blocky typeface and cannot express the two-tone wordmark or
++	 * the PlayStation glyphs. Both are ordinary textures drawn through the same
++	 * path as the starfield, so neither needed new rendering code -- only the
++	 * texture pipeline working, which it now does.
++	 *
++	 * Sits to the right of Tux (5..133) and is 284px wide, so it ends well
++	 * inside the 640px safe area. */
++	paintTexture(texTitle, xoffset + 140, yoffset + 24, 2);
++
++	/* Full-width, anchored to the bottom edge. */
++	if (texBottomBar != NULL) {
++		paintTexture(texBottomBar, xoffset,
++			gsGlobal->Height - texBottomBar->Height, 2);
++	}
++	/* The byline used to sit here. It has moved to Advanced Menu -> Versions ->
++	 * Credits: this row is a fixed 640px shared with the hint text on the left,
++	 * and gsKit_fontm gives no way to measure a string, so anything longer than
++	 * about a dozen characters either runs off the right edge or collides with
++	 * the hints. A menu screen has room and does not need to be re-tuned every
++	 * time a name changes. With only the mode and build state left here, the
++	 * block fits back at its original x=490. */
++	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY - 15, 3, 0.5, TexInfo,
+ 		modeDescription[currentMode]);
+-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.5, TexBlack,
+-		"by Mega Man");
+-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY + 15, 3, 0.5, TexBlack,
++	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.5, TexInfo,
+ 		"UNSTABLE"
+ #ifdef RTE
+ 		" RTE"
+@@ -424,12 +496,15 @@ void graphic_auto_boot_paint(int time)
+ 	graphic_common();
+ 
+ 	snprintf(msg, sizeof(msg), "Auto Boot in %d seconds.", time);
+-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 		msg);
+ 
+ 	gsKit_queue_exec(gsGlobal);
+ 	gsKit_finish(); /* Ensure that DMA has been finished before switching screen buffer. */
+ 	gsKit_sync_flip(gsGlobal);
++	/* Tells the manager a frame boundary passed, so it can retire textures that
++	 * went unused this frame. Required by the bind()-per-draw workflow. */
++	gsKit_TexManager_nextFrame(gsGlobal);
+ }
+ 
+ /** Paint current state on screen. */
+@@ -475,48 +550,51 @@ void graphic_paint(void)
+ 		}
+ 	}
+ 	if (enableDisc) {
+-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 			"Loading, please wait...");
+ 	} else {
+ 		if (msg != NULL) {
+ 			if (usePad) {
+-				gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++				gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 					"Press CROSS to continue.");
+ 			}
+ 		} else {
+ 			if (!isInfoBufferEmpty()) {
+ 				if (usePad) {
+-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 						"Press CROSS to continue.");
+-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.8, TexBlack,
++					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
+ 						"Use UP and DOWN to scroll.");
+ 				}
+ 			} else {
+ 				if (inputBuffer != NULL) {
+ 					if (writeable) {
+-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 							"Please use USB keyboard.");
+ 					}
+-					gsKit_fontm_print_scaled(gsGlobal, gsFont, 50, xoffset + gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.8, TexBlack,
++					gsKit_fontm_print_scaled(gsGlobal, gsFont, 50, xoffset + gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
+ 						"Press CROSS to quit.");
+ 				} else if (menu != NULL) {
+ 					if (usePad) {
+-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 							"Press CROSS to select menu.");
+-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.8, TexBlack,
++						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
+ 							"Use UP and DOWN to scroll.");
+ 					}
+ 				}
+ 			}
+ 		}
+ 		if (!usePad) {
+-			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.8, TexBlack,
++			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
+ 				"Please wait...");
+ 		}
+ 	}
+ 	gsKit_queue_exec(gsGlobal);
+ 	gsKit_finish(); /* Ensure that DMA has been finished before switching screen buffer. */
+ 	gsKit_sync_flip(gsGlobal);
++	/* Tells the manager a frame boundary passed, so it can retire textures that
++	 * went unused this frame. Required by the bind()-per-draw workflow. */
++	gsKit_TexManager_nextFrame(gsGlobal);
+ 
+ 	cursor_counter++;
+ 	if (cursor_counter >= getModeFrequenzy()) {
+@@ -583,10 +661,16 @@ GSTEXTURE *getTexture(const char *filename)
+ 	const rom_entry_t *romfile;
+ 	romfile = rom_getFile(filename);
+ 	if (romfile != NULL) {
+-		tex = (GSTEXTURE *) malloc(sizeof(GSTEXTURE));
++		/* calloc, NOT malloc: gsKit's GSTEXTURE has grown fields since this
++		 * code was written -- ClutPSM, TBW, Clut, VramClut, ClutStorageMode
++		 * and Delayed are all left uninitialised by the assignments below.
++		 * "Delayed" is the fatal one: it means "delay texture upload to VRAM",
++		 * so a garbage non-zero value makes gsKit silently never upload the
++		 * texture. It then draws nothing at all, with no error reported and
++		 * regardless of pixel format or which upload path is taken. Zeroing
++		 * the whole struct keeps every field gsKit gained at its default. */
++		tex = (GSTEXTURE *) calloc(1, sizeof(GSTEXTURE));
+ 		if (tex != NULL) {
+-			u32 size;
+-
+ 			tex->Width = romfile->width;
+ 			tex->Height = romfile->height;
+ 			if (romfile->depth == 4) {
+@@ -597,20 +681,17 @@ GSTEXTURE *getTexture(const char *filename)
+ 			tex->Mem = (u32 *) romfile->start;
+ 			tex->Filter = GS_FILTER_LINEAR;
+ 
+-			size = gsKit_texture_size_ee(tex->Width, tex->Height, tex->PSM);
+-			if (size <= SMALL_TEXT_SIZE) {
+-				tex->Vram = gsKit_vram_alloc(gsGlobal, gsKit_texture_size(tex->Width, tex->Height, tex->PSM), GSKIT_ALLOC_USERBUFFER);
+-				if (tex->Vram != GSKIT_ALLOC_ERROR) {
+-					gsKit_texture_upload(gsGlobal, tex);
+-				} else {
+-					kprintf("Out of VRAM \"%s\".\n", filename);
+-					free(tex);
+-					error_printf("Out of VRAM while loading texture (%s).", filename);
+-					return NULL;
+-				}
+-			} else {
+-				tex->Vram = globalVram;
+-			}
++			/* VRAM is the texture manager's to hand out, not ours. Vram == 0
++			 * means "not resident yet"; gsKit_TexManager_bind() in
++			 * paintTexture() allocates and uploads on first use and re-uploads
++			 * after an eviction. The previous code called gsKit_vram_alloc()
++			 * here and assigned the result itself, which modern gsKit ignores.
++			 * Delayed/VramClut are already 0 from the calloc above. */
++			tex->Vram = 0;
++
++			kprintf("texture \"%s\" %ux%u psm %u (%u bytes)\n", filename,
++				tex->Width, tex->Height, tex->PSM,
++				gsKit_texture_size_ee(tex->Width, tex->Height, tex->PSM));
+ 		} else {
+ 			error_printf("Out of memory while loading texture (%s).", filename);
+ 		}
+@@ -620,20 +701,34 @@ GSTEXTURE *getTexture(const char *filename)
+ 	return tex;
+ }
+ 
++/** Re-establish a texture after the display mode changed.
++ *
++ * A mode switch tears down and rebuilds the GS display buffers, so everything
++ * the texture manager had resident is gone. Marking the texture invalid is all
++ * that is needed: the next gsKit_TexManager_bind() in paintTexture() sees no
++ * residency and uploads it again.
++ *
++ * This used to re-run the manual gsKit_vram_alloc()/gsKit_texture_upload()
++ * pair, which modern gsKit ignores -- see paintTexture(). */
+ void reallocTexture(GSTEXTURE *tex)
+ {
+-	u32 size;
+-
+-	size = gsKit_texture_size_ee(tex->Width, tex->Height, tex->PSM);
+-	if (size <= SMALL_TEXT_SIZE) {
+-		tex->Vram = gsKit_vram_alloc(gsGlobal, gsKit_texture_size(tex->Width, tex->Height, tex->PSM), GSKIT_ALLOC_USERBUFFER);
+-		if (tex->Vram != GSKIT_ALLOC_ERROR) {
+-			gsKit_texture_upload(gsGlobal, tex);
+-		} else {
+-			kprintf("Out of VRAM.\n");
+-			error_printf("Out of VRAM while realloc texture.");
+-		}
++	if (tex == NULL) {
++		return;
+ 	}
++
++	/* Clear residency by hand rather than calling
++	 * gsKit_TexManager_invalidate(). Invalidate is for a texture the CURRENT
++	 * manager knows about, but changeMode() replaces gsGlobal wholesale via
++	 * gsKit_init_global(), so by the time this runs the new manager has never
++	 * seen these textures -- and asking it to invalidate one sends it through
++	 * bookkeeping that does not describe it. That was the burst of
++	 * "TLB Miss ... [store]" at 0x300000xx inside memcpy(), followed by a Trap
++	 * exception, on every video mode change.
++	 *
++	 * Vram == 0 is exactly the state getTexture() leaves a texture in before
++	 * its first use, and gsKit_TexManager_bind() treats it as "not resident"
++	 * and uploads into the rebuilt VRAM layout. */
++	tex->Vram = 0;
+ }
+ 
+ bool isNTSCMode(void)
+@@ -672,11 +767,7 @@ Menu *graphic_main(void)
+ 
+ 	lastMode = currentMode;
+ 
+-	if (currentMode == 0) {
+-		gsGlobal->Mode = gsKit_detect_signal();
+-	} else {
+-		gsGlobal->Mode = modeList[currentMode];
+-	}
++	applyVideoMode(gsGlobal, currentMode);
+ 
+ 	if (isNTSCMode()) {
+ 		numberOfMenuItems = 7;
+@@ -699,13 +790,18 @@ Menu *graphic_main(void)
+ 
+ 	TexCol = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00);
+ 	TexRed = GS_SETREG_RGBAQ(0xF0, 0x10, 0x10, 0x80, 0x00);
+-	TexBlack = GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x80, 0x00);
++	TexInfo = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00);
+ 
+ 	gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+ 	gsGlobal->ZBuffering = GS_SETTING_OFF;
+ 
+ 	gsKit_init_screen(gsGlobal);
+ 
++	/* The texture manager owns VRAM and must be (re)initialised whenever the
++	 * display buffers are set up; without this, gsKit_TexManager_bind() has no
++	 * state to allocate from and every textured draw silently renders nothing. */
++	gsKit_TexManager_init(gsGlobal);
++
+ 	check_screen_offsets();
+ 
+ 	gsFont = gsKit_init_fontm();
+@@ -714,12 +810,6 @@ Menu *graphic_main(void)
+ 		SleepThread();
+ 	}
+ 
+-	globalVram = gsKit_vram_alloc(gsGlobal, MAX_TEX_SIZE, GSKIT_ALLOC_USERBUFFER);
+-	if (globalVram == GSKIT_ALLOC_ERROR) {
+-		kprintf("Failed to allocate texture buffer.\n");
+-		error_printf("Failed to allocate texture buffer.\n");
+-	}
+-
+ 	gsFont->Spacing = 0.8f;
+ 	texFolder = getTexture("folder.rgb");
+ 	texUp = getTexture("up.rgb");
+@@ -728,7 +818,9 @@ Menu *graphic_main(void)
  	texUnselected = getTexture("unselected.rgb");
  	texPenguin = getTexture("penguin.rgb");
  	texDisc = getTexture("disc.rgb");
 -	texCloud = getTexture("cloud.rgb");
 +	texStarfield = getTexture("starfield.rgb");
++	texTitle = getTexture("title.rgb");
++	texBottomBar = getTexture("bottombar.rgb");
  
  	mainMenu = menu = new Menu(gsGlobal, gsFont, numberOfMenuItems);
  	menu->setPosition(50, 120);
-@@ -1135,7 +1135,7 @@ extern "C" {
+@@ -844,7 +936,16 @@ extern "C" {
+ 		if (errorMessage[writeMsgPos] == NULL) {
+ 			ret = vsnprintf(buffer[writeMsgPos], MAX_BUFFER, format, varg);
+ 
+-			sio_putsn(buffer[writeMsgPos]);
++			/* Mirror every on-screen error to the debug channel.
++			 *
++			 * This used to be a bare sio_putsn(), which appends no newline, so
++			 * consecutive errors ran together into one unreadable line and had
++			 * no marker to search for. Emitting a fixed "[kloader ERROR]"
++			 * prefix and a guaranteed newline means the full error history can
++			 * be read from the SIO log (PCSX2's console, or a serial capture on
++			 * real hardware) without having to photograph the screen -- and
++			 * without having to dismiss each prompt to see the next one. */
++			kprintf("[kloader ERROR] %s\n", buffer[writeMsgPos]);
+ 
+ 			setErrorMessage(buffer[writeMsgPos]);
+ 
+@@ -855,7 +956,15 @@ extern "C" {
+ 				}
+ 			}
+ 		} else {
+-			kprintf("error_printf loosing message: %s\n", format);
++			/* Queue full, so this message will never reach the screen -- which
++			 * makes it all the more important that it reaches the log. The
++			 * original logged "format", the raw template with its conversions
++			 * unexpanded, hiding the actual values precisely when they were
++			 * most needed. Expand it properly instead. */
++			static char dropped[MAX_BUFFER];
++
++			vsnprintf(dropped, MAX_BUFFER, format, varg);
++			kprintf("[kloader ERROR dropped] %s\n", dropped);
+ 			ret = -1;
+ 		}
+ 
+@@ -1064,30 +1173,30 @@ extern "C" {
+ 
+ 		lastMode = currentMode;
+ 
+-		gsKit_deinit_global(gsGlobal);
++		/* Release the font through gsKit's own call, while the GSGLOBAL it was
++		 * uploaded against is still valid.
++		 *
++		 * This used to hand-free the font's internals -- offset_table, TexBase
++		 * and each page's Clut -- under the comment "gsKit has no function to
++		 * free allocated memory for fonts". That is no longer true: modern
++		 * gsKit provides gsKit_free_fontm(). Worse, the hand-freed GSFONTM was
++		 * then handed straight back to gsKit_fontm_upload() below, which wrote
++		 * through structures that had been partially torn down. The result was
++		 * heap corruption on every video mode change, surfacing as a burst of
++		 * "TLB Miss ... [store]" inside memcpy() and a Trap exception, at a
++		 * scatter of PCs rather than one consistent site.
++		 *
++		 * The font is rebuilt from scratch after the new screen is up, exactly
++		 * as graphic_main() does it. */
++		gsKit_free_fontm(gsGlobal, gsFont);
++		gsFont = NULL;
+ 
+-		/* XXX: gsKit has no function to free allocated memory for fonts. */
+-		if (gsFont->Header.offset_table != NULL) {
+-			free(gsFont->Header.offset_table);
+-			gsFont->Header.offset_table = NULL;
+-		}
+-		if (gsFont->TexBase != NULL) {
+-			free(gsFont->TexBase);
+-			gsFont->TexBase = NULL;
+-		}
+-		if (gsFont->Texture->Clut != NULL) {
+-			free(gsFont->Texture->Clut);
+-			gsFont->Texture->Clut = NULL;
+-		}
++		gsKit_deinit_global(gsGlobal);
+ 
+ 		gsGlobal = gsKit_init_global();
+ 
+ 
+-		if (currentMode == 0) {
+-			gsGlobal->Mode = gsKit_detect_signal();
+-		} else {
+-			gsGlobal->Mode = modeList[currentMode];
+-		}
++		applyVideoMode(gsGlobal, currentMode);
+ 
+ 		if (isNTSCMode()) {
+ 			numberOfMenuItems = 7;
+@@ -1108,6 +1217,11 @@ extern "C" {
+ 
+ 		gsKit_init_screen(gsGlobal);
+ 
++		/* changeMode() throws the old GSGLOBAL away and builds a new one with
++		 * gsKit_init_global(), so this really is a fresh manager that has to be
++		 * initialised -- it is not a redundant second call. */
++		gsKit_TexManager_init(gsGlobal);
++
+ 		check_screen_offsets();
+ 
+ 		if (gsGlobal->Width > 640) {
+@@ -1116,17 +1230,13 @@ extern "C" {
+ 			xoffset = 0;
+ 		}
+ 
++		/* Fresh font object for the new GSGLOBAL, mirroring graphic_main(). */
++		gsFont = gsKit_init_fontm();
+ 		if (gsKit_fontm_upload(gsGlobal, gsFont) != 0) {
+ 			kprintf("Can't find any font to use\n");
+ 			SleepThread();
+ 		}
+ 
+-		globalVram = gsKit_vram_alloc(gsGlobal, MAX_TEX_SIZE, GSKIT_ALLOC_USERBUFFER);
+-		if (globalVram == GSKIT_ALLOC_ERROR) {
+-			kprintf("Failed to allocate texture buffer.\n");
+-			error_printf("Failed to allocate texture buffer.\n");
+-		}
+-
+ 		gsFont->Spacing = 0.8f;
+ 		reallocTexture(texFolder);
+ 		reallocTexture(texUp);
+@@ -1135,7 +1245,9 @@ extern "C" {
  		reallocTexture(texUnselected);
  		reallocTexture(texPenguin);
  		reallocTexture(texDisc);
 -		reallocTexture(texCloud);
 +		reallocTexture(texStarfield);
++		reallocTexture(texTitle);
++		reallocTexture(texBottomBar);
  
  		if (mainMenu != NULL) {
  			mainMenu->reset(gsGlobal, gsFont, numberOfMenuItems);
@@ -2104,6 +3509,798 @@ index 5f76a86..9ed5099 100644
  } ps2_gsreg_smode2 __attribute__((packed));
  #define PS2_GS_SMODE2_INT_NOINTERLACE	0
  #define PS2_GS_SMODE2_INT_INTERLACE	1
+diff --git a/loader/iopmem.c b/loader/iopmem.c
+index 6462721..2a44fc8 100644
+--- a/loader/iopmem.c
++++ b/loader/iopmem.c
+@@ -5,6 +5,8 @@
+ #include "stdio.h"
+ 
+ #include "iopmem.h"
++/* sio_printf() -- removed from ps2sdk's sio.h, reimplemented in kprint.c. */
++#include "kprint.h"
+ #include "memory.h"
+ 
+ #include "smod.h"
+diff --git a/loader/kprint.c b/loader/kprint.c
+index a5c5537..8ad62ca 100644
+--- a/loader/kprint.c
++++ b/loader/kprint.c
+@@ -1,6 +1,8 @@
+ #include <stdio.h>
+ #include <kprint.h>
+ #include <sio.h>
++/* fioPutc(), used by kputs() below. Needs NEWLIB_PORT_AWARE (set in Makefile). */
++#include <fileio.h>
+ 
+ #include "memory.h"
+ #include "iopmem.h"
+@@ -110,6 +112,35 @@ int kprintf(const char *format, ...)
+ 	return ret;
+ }
+ 
++/* sio_printf() was provided by older ps2sdk and has since been removed -- the
++ * current sio.h keeps sio_putc/sio_puts/sio_putsn/sio_write but no formatted
++ * variant. main.cpp and crc32check.c both call it, so it is reimplemented here
++ * rather than at those call sites; this file already owns SIO printing and is
++ * already in EE_OBJS.
++ *
++ * Deliberately NOT routed through kputs() like kprintf() above: kputs() also
++ * mirrors output to iop_putc()/fioPutc(), which the original sio_printf() never
++ * did. sio_putsn() is the direct equivalent -- "puts without appending a
++ * newline" -- so the format string stays in control of line breaks. It is used
++ * un-initialised elsewhere in this program already (graphic.cpp:847).
++ *
++ * Its own buffer, so that interleaved kprintf()/sio_printf() cannot clobber
++ * each other. */
++int sio_printf(const char *format, ...)
++{
++	va_list args;
++	int ret;
++	static char sio_buffer[BUFFER_SIZE];
++
++	va_start(args, format);
++	ret = vsnprintf(sio_buffer, BUFFER_SIZE, format, args);
++	va_end(args);
++
++	sio_putsn(sio_buffer);
++
++	return ret;
++}
++
+ /** Called if system is in an unrecoverable state. */
+ void panic()
+ {
+diff --git a/loader/kprint.h b/loader/kprint.h
+index a410834..3f038b3 100644
+--- a/loader/kprint.h
++++ b/loader/kprint.h
+@@ -12,6 +12,8 @@ extern "C" {
+ 	void kputs(const char *str);
+ 	int kprintf(const char *format, ...);
+ 	void kputx(uint32_t val);
++	/* Reimplemented in kprint.c -- removed from modern ps2sdk's sio.h. */
++	int sio_printf(const char *format, ...);
+ 	void panic();
+ 
+ #ifdef __cplusplus
+diff --git a/loader/linkfile b/loader/linkfile
+index 722444f..c66eb0f 100644
+--- a/loader/linkfile
++++ b/loader/linkfile
+@@ -11,7 +11,16 @@
+ # Linkfile script for ee-ld
+ */
+ 
+-ENTRY(_start);
++/* Modern ps2sdk's crt0 defines the entry point as "__start" (two underscores);
++ * it used to be "_start". Left as _start, the symbol never resolves, so ld
++ * warns "cannot find entry symbol _start; defaulting to 01000000" AND -- the
++ * part that actually matters -- crt0.o gets garbage-collected out of the link
++ * entirely, because an unresolved ENTRY leaves nothing rooting it. The result
++ * still links and still produces a plausible-looking ELF whose entry address
++ * lands on whatever code happens to sit first in .text, with no stack, heap or
++ * .bss setup. Verified: with _start there is no __start symbol in the output;
++ * with __start, crt0 is retained and the ELF entry points at it. */
++ENTRY(__start);
+ 
+ PHDRS
+ {
+diff --git a/loader/loader.c b/loader/loader.c
+index a4df821..a55b3f8 100644
+--- a/loader/loader.c
++++ b/loader/loader.c
+@@ -1,11 +1,21 @@
+ /* Copyright (c) 2007 - 2009 Mega Man */
+ #include <stdio.h>
+ #include <string.h>
++/* stdlib.h: free(), realloc(), atoi(); malloc.h: memalign(). These were
++ * implicitly declared, which -Werror-implicit-function-declaration rejects.
++ * Implicit declaration is also genuinely wrong here rather than merely untidy:
++ * gcc assumes int, so memalign()'s pointer return was being truncated. */
++#include <stdlib.h>
++#include <malloc.h>
+ #include <kernel.h>
+ #include <iopheap.h>
+ #include <loadfile.h>
+ #include <sbv_patches.h>
+ #include <sifrpc.h>
++/* fioExit(). NOT a removed API -- it is still declared in ps2sdk's
++ * ee/include/fileio.h; this file simply never included it and older headers
++ * pulled it in transitively. Requires NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <fileio.h>
+ #include <iopcontrol.h>
+ #include <debug.h>
+ #include <osd_config.h>
+@@ -1781,6 +1791,54 @@ uint32_t *getSBIOSCallTable(char *addr)
+ 				dprintf("addu r%d, r%d, r%d\n", rd, rs, rt);
+ 				regs[rd] = regs[rs] + regs[rt];
+ 			}
++			if ((value & 0x3f) == 0) {
++				/* sll instruction.
++				 *
++				 * Needed because gcc 15 indexes the SBIOS call table with
++				 * "sll v0,v0,2" before adding the base. Untracked, the shifted
++				 * register kept a stale value. Harmless when the index is zero,
++				 * but wrong the moment it is not. */
++				int rt;
++				int rd;
++				int sa;
++
++				rt = (value >> 16) & 0x1f;
++				rd = (value >> 11) & 0x1f;
++				sa = (value >> 6) & 0x1f;
++
++				if (rd != 0) {
++					regs[rd] = regs[rt] << sa;
++					dprintf("sll r%d, r%d, %d\n", rd, rt, sa);
++				}
++			}
++			if ((value & 0x3f) == 8) {
++				/* jr instruction.
++				 *
++				 * THIS is how a modern toolchain dispatches the SBIOS call
++				 * table. The scan below only recognised "jalr", which is what
++				 * the 2003-era compiler emitted; gcc 15 tail-jumps with "jr t9"
++				 * instead:
++				 *
++				 *   lui   v1,0x8001
++				 *   sll   v0,v0,0x2
++				 *   addiu v1,v1,-31800
++				 *   addu  v0,v0,v1
++				 *   lw    t9,0(v0)
++				 *   jr    t9
++				 *
++				 * With only jalr matched, jumpBase stayed 0 and the loader gave
++				 * up with "SBIOS call table not found" -- at the very last step
++				 * before handing control to the kernel. */
++				int rs;
++
++				rs = (value >> 21) & 0x1f;
++
++				dprintf("jr r%d\n", rs);
++				if (load[rs] != 0) {
++					jumpBase = load[rs];
++					break;
++				}
++			}
+ 			if ((value & 0x3f) == 9) {
+ 				/* jalr instruction */
+ 				int rs;
+@@ -2006,7 +2064,13 @@ static int real_loader(void)
+ 	const char *kernel_filename = NULL;
+ 	uint32_t *initrd_header = NULL;
+ 	uint32_t initrd_start = 0;
+-	uint32_t initrd_size = 0;
++	/* Was uint32_t, which newlib defines as "unsigned long" -- a distinct type
++	 * from the "int *" load_file() takes, so passing &initrd_size was a hard
++	 * -Wincompatible-pointer-types error. unsigned int matches the existing
++	 * accepted pattern (modules[i].size, also passed to load_file), keeps the
++	 * value unsigned as a byte count should be, and makes the "%08x" format
++	 * specifiers below correct rather than merely tolerated. */
++	unsigned int initrd_size = 0;
+ 
+ 	/* Initialize memboot parameter. */
+ 	memset(&bootpage, 0, sizeof(bootpage));
+diff --git a/loader/loader.h b/loader/loader.h
+index 08024c4..c5f8fae 100644
+--- a/loader/loader.h
++++ b/loader/loader.h
+@@ -4,7 +4,7 @@
+ 
+ #include "stdint.h"
+ 
+-#define LOADER_VERSION "3.0"
++#define LOADER_VERSION "3.X"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/loader/loadermenu.cpp b/loader/loadermenu.cpp
+index 099d09f..e1961e1 100644
+--- a/loader/loadermenu.cpp
++++ b/loader/loadermenu.cpp
+@@ -1,4 +1,9 @@
+ /* Copyright (c) 2007-2010 Mega Man */
++/* stdio.h: snprintf(); fileio.h: fioExit()/fioRemove()/fioRmdir(). Both were
++ * reaching this file transitively under the old SDK. fileio.h needs
++ * NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <stdio.h>
++#include <fileio.h>
+ #include <gsKit.h>
+ #include <loadfile.h>
+ #include <kernel.h>
+@@ -1018,6 +1023,15 @@ int reloadModules(void *arg)
+ 	return 0;
+ }
+ 
++/** The Advanced Menu, remembered so TRIANGLE can jump straight to it from
++ * anywhere -- the "Options" action advertised on the button bar. */
++static Menu *g_advancedMenu = NULL;
++
++Menu *getAdvancedMenu(void)
++{
++	return g_advancedMenu;
++}
++
+ void initMenu(Menu *menu)
+ {
+ 	int i;
+@@ -1040,11 +1054,16 @@ void initMenu(Menu *menu)
+ 	menu->addItem("Edit Video Parameter", editString, videoParameter);
+ 	menu->addItem(" Set to current mode", setDefaultVideoParameterMenu, videoParameter);
+ 	menu->addItem("Load Config from MC0", mcLoadConfig, (void *) CONFIG_FILE);
++	/* MC1 had no menu entry at all: CONFIG_DIR2 was defined but nothing ever
++	 * loaded from the second card. Pairs with the mc0/mc1 startup search. */
++	menu->addItem("Load Config from MC1", mcLoadConfig, (void *) CONFIG_FILE2);
+ 	menu->addItem("Load Config from DVD", mcLoadConfig, (void *) DVD_CONFIG_FILE);
+ 	menu->addItem("Load Config from USB", mcLoadConfig, (void *) USB_CONFIG_FILE);
+ 	menu->addItem("Load NetSurf Config from USB", mcLoadConfig, (void *) PS2NS_CONFIG_FILE);
+ 	menu->addItem("Save Config on MC0", mcSaveConfig, (void *) CONFIG_FILE);
++	menu->addItem("Save Config on MC1", mcSaveConfig, (void *) CONFIG_FILE2);
+ 	Menu *advancedMenu = menu->addSubMenu("Advanced Menu");
++	g_advancedMenu = advancedMenu;
+ 	advancedMenu->addItem(menu->getTitle(), setCurrentMenu, menu, getTexBack());
+ 
+ 	advancedMenu->addItem("Boot Current Config", loader, NULL);
+@@ -1053,8 +1072,10 @@ void initMenu(Menu *menu)
+ 	fileMenu->addItem("Restore defaults", setDefaultConfiguration, NULL);
+ 	fileMenu->addItem("Load Selected Config", mcLoadConfig, configfile);
+ 	fileMenu->addItem("Save Config on MC0", mcSaveConfig, (void *) CONFIG_FILE);
++	fileMenu->addItem("Save Config on MC1", mcSaveConfig, (void *) CONFIG_FILE2);
+ 	fileMenu->addItem("Save Selected Config", mcSaveConfig, configfile);
+ 	fileMenu->addItem("Delete Config on MC0", removefile, (void *) CONFIG_FILE);
++	fileMenu->addItem("Delete Config on MC1", removefile, (void *) CONFIG_FILE2);
+ 
+ 	Menu *configFileMenu = fileMenu->addSubMenu("Select Config File");
+ 	configFileMenu->addItem(fileMenu->getTitle(), setCurrentMenu, fileMenu, getTexBack());
+@@ -1120,6 +1141,10 @@ void initMenu(Menu *menu)
+ 
+ 	strcpy(kernelFilename, EXAMPLE_KERNEL);
+ 	addConfigTextItem("KernelFileName", kernelFilename, MAX_PATH_LEN);
++	/* Auto Boot was reachable only from the Advanced Menu, never from
++	 * config.txt -- so an unattended boot could not be configured at all.
++	 * Value is seconds (0 = off, 1..10), matching autoBootText[]'s index. */
++	addConfigCheckItem("AutoBootTime", &loaderConfig.autoBootTime);
+ 	//linuxMenu->addItem("Show Filename", showText, (void *) &kernelFilename);
+ 	linuxMenu->addItem("Edit Filename", editString, (void *) &kernelFilename);
+ 	linuxMenu->addItem("Example Kernel", setExampleKernel, (void *) &kernelFilename);
+@@ -1363,8 +1388,27 @@ void initMenu(Menu *menu)
+ #endif
+ 	;
+ 
++	/* Credits live here rather than in the corner of the main screen: that row
++	 * is a fixed 640px shared with the on-screen hints, and there is no way to
++	 * measure a string's width with gsKit_fontm, so anything of length either
++	 * clipped or collided. */
++	/* printTextBlock() wraps at 26 columns and restarts wrapped lines at column
++	 * 0, which throws away the leading indent and makes the whole block look
++	 * ragged. Every line below is kept under ~22 characters so none of them
++	 * wrap; keep it that way when editing. */
++	static char credits_text[] =
++		"kernelreloaded\n"
++		"  Arawn Davies - port\n"
++		"kernelloader\n"
++		"  Mega Man - author\n"
++		"  rickgaiser - upkeep\n"
++		"  citronalco - fixes\n"
++		"TGE SBIOS\n"
++		"  Marcus R. Brown\n";
++
+ 	versionMenu = advancedMenu->addSubMenu("Versions");
+ 	versionMenu->addItem(advancedMenu->getTitle(), setCurrentMenu, advancedMenu, getTexBack());
++	versionMenu->addItem("Credits", showText, (void *) credits_text);
+ 	versionMenu->addItem("Kernelloader Version", showText, (void *) kloader_version);
+ 	versionMenu->addItem("PS2 Console type", showText, (void *) ps2_console_type);
+ 	versionMenu->addItem("PS2 Region type", showText, (void *) ps2_region_type);
+diff --git a/loader/loadermenu.h b/loader/loadermenu.h
+index fbb2470..81f6261 100644
+--- a/loader/loadermenu.h
++++ b/loader/loadermenu.h
+@@ -6,6 +6,9 @@
+ #include "menu.h"
+ 
+ void initMenu(Menu *menu);
++
++/** @returns the Advanced Menu, or NULL before initMenu() has run. */
++Menu *getAdvancedMenu(void);
+ #endif
+ 
+ #ifdef __cplusplus
+diff --git a/loader/main.cpp b/loader/main.cpp
+index 43fa7bd..751eb70 100644
+--- a/loader/main.cpp
++++ b/loader/main.cpp
+@@ -405,6 +405,25 @@ int main(int argc, char **argv)
+ 							/* Restore menu if not already changed by menu entry. */
+ 							setCurrentMenu(menu);
+ 						}
++					} else if (new_pad & PAD_CIRCLE) {
++						/* Back: up one level. Previously CIRCLE did nothing in a
++						 * menu -- the only way out of a submenu was its first
++						 * entry -- even though the button bar advertises it. At
++						 * the root there is no parent, so this does nothing. */
++						Menu *parent = menu->getParent();
++
++						if (parent != NULL) {
++							setCurrentMenu(parent);
++						}
++					} else if (new_pad & PAD_TRIANGLE) {
++						/* Options: jump straight to the Advanced Menu from
++						 * anywhere, rather than walking down to it. Doing
++						 * nothing when already there keeps it idempotent. */
++						Menu *advanced = getAdvancedMenu();
++
++						if ((advanced != NULL) && (advanced != menu)) {
++							setCurrentMenu(advanced);
++						}
+ 					}
+ 				} else {
+ 					setCurrentMenu(lastValidMenu);
+diff --git a/loader/menu.cpp b/loader/menu.cpp
+index 87f8958..e2ce119 100644
+--- a/loader/menu.cpp
++++ b/loader/menu.cpp
+@@ -18,13 +18,15 @@ void Menu::paint(void)
+ 		/** Text colour. */
+ 		static u64 TexCol;
+ 		/** Scale factor for font. */
+-		static float scale = 1.4f;
++		/* Menu heading. Reduced from 1.4 -- at that size the BIOS ROM font
++		 * dwarfed the pre-rendered title lockup above it. */
++		static float scale = 0.95f;
+ 
+ 		TexCol = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00);
+ 
+ 		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + x, yoffset + y, 3, scale, TexCol,
+ 			title);
+-		y += 50;
++		y += 34;	/* gap under the heading, scaled with it */
+ 	}
+ 
+ 	start = 0;
+@@ -43,7 +45,7 @@ void Menu::paint(void)
+ 	for (i = menuVector.begin(); i != menuVector.end(); i++) {
+ 		if (c >= start) {
+ 			i->paint(x, y, z);
+-			y += 35;
++			y += 26;	/* item pitch, scaled with the item text */
+ 			z += 2;
+ 		}
+ 		c++;
+@@ -116,6 +118,7 @@ Menu *Menu::addSubMenu(const char *name)
+ 	subMenu = new Menu(gsGlobal, gsFont, numberOfMenuItems);
+ 	subMenu->setTitle(name);
+ 	subMenu->setPosition(positionX, positionY);
++	subMenu->setParent(this);
+ 
+ 	addItem(name, setCurrentMenu, subMenu);
+ 
+diff --git a/loader/menu.h b/loader/menu.h
+index e09631d..b49cde7 100644
+--- a/loader/menu.h
++++ b/loader/menu.h
+@@ -27,6 +27,11 @@ class Menu {
+ 	int numberOfMenuItems;
+ 	std::vector<Menu *> subMenuVector;
+ 
++	/** Menu this one was opened from, or NULL for the root menu.
++	 * Set by addSubMenu(); lets CIRCLE walk back up without every menu
++	 * having to carry an explicit back entry. */
++	Menu *parentMenu;
++
+ 	public:
+ 	Menu(GSGLOBAL *gsGlobal, GSFONTM *gsFont, int numberOfMenuItems) :
+ 		gsGlobal(gsGlobal),
+@@ -34,7 +39,8 @@ class Menu {
+ 		positionX(0),
+ 		positionY(0),
+ 		title(NULL),
+-		numberOfMenuItems(numberOfMenuItems)
++		numberOfMenuItems(numberOfMenuItems),
++		parentMenu(NULL)
+ 	{
+ 		selectedMenu = 0;
+ 		numberOfMenuEntries = 0;
+@@ -73,6 +79,17 @@ class Menu {
+ 		return title;
+ 	}
+ 
++	void setParent(Menu *parent)
++	{
++		parentMenu = parent;
++	}
++
++	/** @returns the menu this was opened from, or NULL at the root. */
++	Menu *getParent(void)
++	{
++		return parentMenu;
++	}
++
+ 	void selectUp(void)
+ 	{
+ 		int i;
+diff --git a/loader/menuEntry.cpp b/loader/menuEntry.cpp
+index b8259cb..dd94de0 100644
+--- a/loader/menuEntry.cpp
++++ b/loader/menuEntry.cpp
+@@ -23,8 +23,8 @@ void MenuEntry::paint(int x, int y, int z)
+ 	/** Text colour. */
+ 	u64 TexCol;
+ 	u64 CheckCol;
+-	/** Scale factor for font. */
+-	float scale = 0.9f;
++	/** Scale factor for font. Kept in proportion with graphic.cpp's `scale`. */
++	float scale = 0.55f;
+ 
+ 	if (selected) {
+ 		CheckCol = GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00);
+@@ -36,7 +36,10 @@ void MenuEntry::paint(int x, int y, int z)
+ 
+ 	if (selected) {
+ 		u64 White = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x00, 0x00);
+-		gsKit_prim_sprite(gsGlobal, x - 10, y - 5, x + 520, y + 30, z, White);
++		/* Highlight tracks the text: 520px wide and 35px tall suited the old
++		 * 0.9 scale and now overhangs badly. Narrowed towards the mockup's
++		 * proportions and shortened to the new line height. */
++		gsKit_prim_sprite(gsGlobal, x - 8, y - 3, x + 330, y + 21, z, White);
+ 	}
+ 
+ 	if (multiItem) {
+@@ -65,6 +68,10 @@ void MenuEntry::paint(int x, int y, int z)
+ 		tex = getTexUnselected();
+ 	}
+ 	if (tex != NULL) {
++		/* Modern gsKit will not sample a texture the manager has not made
++		 * resident: unbound, these icons draw as a black square (whatever
++		 * occupies that VRAM). paintTexture() binds for the same reason. */
++		gsKit_TexManager_bind(gsGlobal, tex);
+ 		gsKit_prim_sprite_texture(gsGlobal, tex, x, y - 3, 0, 0, x + tex->Width, y - 3 + tex->Height, tex->Width, tex->Height, z + 1, 0x80808080 /* color */);
+ 		x += tex->Width;
+ 	}
+@@ -72,6 +79,7 @@ void MenuEntry::paint(int x, int y, int z)
+ 	}
+ 
+ 	if (tex != NULL) {
++		gsKit_TexManager_bind(gsGlobal, tex);
+ 		gsKit_prim_sprite_texture(gsGlobal, tex, x, y - 3, 0, 0, x + tex->Width, y - 3 + tex->Height, tex->Width, tex->Height, z + 1, 0x80808080 /* color */);
+ 		x += tex->Width;
+ 	}
+diff --git a/loader/modules.c b/loader/modules.c
+index 8e0c4ca..a942972 100644
+--- a/loader/modules.c
++++ b/loader/modules.c
+@@ -1,6 +1,16 @@
+ /* Copyright (c) 2007 Mega Man */
+ #include <stdio.h>
+ #include <string.h>
++/* Modern ps2sdk/newlib headers no longer pull these in transitively:
++ *   stdlib.h  strtoul()
++ *   fcntl.h   open(), O_RDONLY
++ *   unistd.h  read(), close()
++ *   fileio.h  fioExit() -- still present in ps2sdk, just never included here;
++ *             needs NEWLIB_PORT_AWARE, set in the Makefile. */
++#include <stdlib.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <fileio.h>
+ #include <kernel.h>
+ #include <iopheap.h>
+ #include <loadfile.h>
+@@ -166,29 +176,50 @@ static moduleLoaderEntry_t moduleList[] = {
+ 		.checkMc = -1,
+ 		.debug_mode = -1,
+ 	},
++	/* ps2smap.irx and ps2link.irx entries removed: modern ps2sdk ships neither,
++	 * so loader/Makefile can no longer embed them as ROM blobs and these
++	 * entries would fail rom_getFile() at runtime. See the comment above
++	 * MODULES in loader/Makefile for what restoring them would take.
++	 *
++	 * Both were .network = -1, so they only loaded when hasNetworkSupport()
++	 * was true. Upstream readme.txt: these IOP network modules are mutually
++	 * exclusive with Linux's own SMAP driver and hang the system if the IOP
++	 * uses the network -- so a memory-card/USB Linux boot is unaffected. */
++#endif
+ 	{
+-		.path = "ps2smap.irx",
++		.path = "ps2http.irx",
+ 		.argLen = 0,
+ 		.args = NULL,
+-		.ps2smap = 1,
++		.checkMc = -1,
+ 		.network = -1,
+-		.debug_mode = -1,
+ 	},
++	/* USB mass storage, via the Block Device Manager stack.
++	 *
++	 * This replaces usbhdfsd.irx, the FAT16/FAT32-only driver that predates
++	 * BDM. The new stack is what OPL, Neutrino and NHDDL use, and it brings
++	 * exFAT (FatFs), GPT as well as MBR partition tables, and the option of
++	 * reaching the internal ATA disk through the same filesystem layer.
++	 *
++	 * Load order follows the import lists and must not be reshuffled:
++	 *   bdm          - the manager itself; depends on nothing but the kernel
++	 *   bdmfs_fatfs  - filesystem driver; imports bdm and ioman (iomanX above)
++	 *   usbd         - USB host stack
++	 *   usbmass_bd   - USB block device; imports bdm and usbd
++	 *
++	 * bdmfs_fatfs registers the device as "mass", and its own comment notes it
++	 * "uses global connection order for full backward compatibility" -- so
++	 * existing mass0: paths in config.txt keep working. */
+ 	{
+-		.path = "ps2link.irx",
++		.path = "bdm.irx",
+ 		.argLen = 0,
+ 		.args = NULL,
+-		.checkMc = -1,
+-		.network = -1,
+-		.debug_mode = -1,
++		.checkMc = -1
+ 	},
+-#endif
+ 	{
+-		.path = "ps2http.irx",
++		.path = "bdmfs_fatfs.irx",
+ 		.argLen = 0,
+ 		.args = NULL,
+-		.checkMc = -1,
+-		.network = -1,
++		.checkMc = -1
+ 	},
+ 	{
+ 		.path = "usbd.irx",
+@@ -197,11 +228,28 @@ static moduleLoaderEntry_t moduleList[] = {
+ 		.checkMc = -1
+ 	},
+ 	{
+-		.path = "usbhdfsd.irx",
++		.path = "usbmass_bd.irx",
++		.argLen = 0,
++		.args = NULL,
++		.checkMc = -1
++	},
++	/* MX4SIO: SD card in the memory card slot, as another BDM transport.
++	 * Imports bdm exactly as usbmass_bd does, so it slots into the same stack
++	 * and its cards appear as mass devices through bdmfs_fatfs.
++	 *
++	 * Note it drives SIO2 directly (dmacman/intrman, no sio2man import) and
++	 * physically occupies a memory card slot -- so on a console with the
++	 * adapter fitted, that slot is not available as mc0:/mc1:. Relevant to the
++	 * mc0/mc1 config search: the adapter and a config on that card are
++	 * mutually exclusive. */
++#ifdef MX4SIO_SUPPORT
++	{
++		.path = "mx4sio_bd.irx",
+ 		.argLen = 0,
+ 		.args = NULL,
+ 		.checkMc = -1
+ 	},
++#endif
+ 	{
+ 		.path = "fileXio.irx",
+ 		.argLen = 0,
+@@ -331,6 +379,48 @@ void checkForMusicSupport(void)
+ 	}
+ }
+ 
++/** Region letter used to build the "rom1:EROMDRV<X>" path.
++ *
++ * The EROM driver filename is region-suffixed. Historically this was taken
++ * from NVRAM alone, which fails on any console or emulator whose NVRAM reads
++ * back blank or unrecognised -- PCSX2 for instance returns all zeroes, giving
++ * "S00 T00 F00 R00" and a nonsense path.
++ *
++ * ROMVER is a far more dependable source and is already read at startup by
++ * checkROMVersion(). Its layout is "VVVVRTYYYYMMDD": four version digits, then
++ * the region letter, then the console type, then the build date. For
++ * "0160EC20011004" that gives 'E' (Europe).
++ *
++ * NVRAM is still preferred when it holds a plausible letter, since it reflects
++ * the actual installed drive; ROMVER is the fallback.
++ *
++ * @returns the region letter, or 0 when neither source yields a plausible one.
++ */
++static char detect_region_letter(void)
++{
++	const u8 *nvm;
++	char region;
++
++	nvm = get_nvram();
++	if (nvm_errors == 0) {
++		region = (char) nvm[NVM_REAL_REGION];
++		if ((region >= 'A') && (region <= 'Z')) {
++			return region;
++		}
++	}
++
++	if (strlen(ps2_rom_version) > 4) {
++		region = ps2_rom_version[4];
++		if ((region >= 'A') && (region <= 'Z')) {
++			kprintf("NVRAM region unusable, using ROMVER region '%c' from \"%s\".\n",
++				region, ps2_rom_version);
++			return region;
++		}
++	}
++
++	return 0;
++}
++
+ int loadLoaderModules(int debug_mode, int disable_cdrom)
+ {
+ 	static int load_dvd_config = -1;
+@@ -407,7 +497,40 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
+ 
+ 			setDefaultConfiguration(NULL);
+ 
++			/* Search both memory cards, mc0 first.
++			 *
++			 * This is the change the whole port exists for. kernelloader
++			 * already had a startup fallback chain -- mc0, then mass0:PS2NS,
++			 * then mass0, then cdfs -- but mc1 was simply absent from it, even
++			 * though CONFIG_DIR2 has always been defined. With FreeMcBoot
++			 * occupying mc0 and everything Linux on mc1, the config was never
++			 * found automatically, and the only way to reach it was Advanced
++			 * Menu -> File Menu -> Select Config File on every single boot.
++			 *
++			 * mc1 is readable at exactly this point: MCMAN and MCSERV are
++			 * loaded two entries earlier in moduleList[] and serve both slots,
++			 * which is why this needs no extra module loading or reordering.
++			 *
++			 * mc0 keeps priority, so an existing mc0 setup behaves as before. */
+ 			lrv = loadConfiguration(CONFIG_FILE);
++			if (lrv != 0) {
++				kprintf("No config at \"%s\", trying \"%s\".\n",
++					CONFIG_FILE, CONFIG_FILE2);
++				lrv = loadConfiguration(CONFIG_FILE2);
++				if (lrv == 0) {
++					kprintf("Loaded configuration from \"%s\".\n", CONFIG_FILE2);
++				}
++			}
++			if (lrv != 0) {
++				/* Development fallback: host: is served by ps2client and by
++				 * PCSX2 (relative to the loaded ELF), so a config can be
++				 * tested with no memory card or USB stick present. Opening it
++				 * simply fails on a real console. */
++				lrv = loadConfiguration(HOST_CONFIG_FILE);
++				if (lrv == 0) {
++					kprintf("Loaded configuration from \"%s\".\n", HOST_CONFIG_FILE);
++				}
++			}
+ 
+ 			changeMode();
+ 
+@@ -454,29 +577,45 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
+ 						/* This is an old fat PS2 (working with SCPH-50004 and SCPH-39004). */
+ 						close(rv);
+ 					} else {
+-						const u8 *nvm;
+-
+-						nvm = get_nvram();
+-						if (nvm_errors == 0) {
+-							/* NVM layout seems to be correct. */
+-							eromdrvpath[12] = nvm[NVM_REAL_REGION];
+-							rv = open(eromdrvpath, O_RDONLY);
+-							if (rv >=0 ) {
+-								/* Region code seems to be correct. */
+-								close(rv);
+-							} else {
+-								error_printf("The region code stored in the NVRAM S%02x T%02x F%02x R%02x "
+-									"can't be detected by version string %s (%s).",
+-									nvm[0x180],
+-									nvm[0x181],
+-									nvm[NVM_FAKE_REGION],
+-									nvm[NVM_REAL_REGION],
+-									ps2_rom_version);
+-								continue;
+-							}
++						char region;
++
++						/* Prefer NVRAM, fall back to ROMVER -- see
++						 * detect_region_letter(). */
++						region = detect_region_letter();
++						if (region == 0) {
++							const u8 *nvm = get_nvram();
++
++							/* Neither source knew. Note the original format
++							 * string here had six conversions but only five
++							 * arguments, so the trailing "(%s)" printed
++							 * garbage; ps2_region_type is what it wanted. */
++							kprintf("Cannot determine region: NVRAM S%02x T%02x F%02x R%02x, "
++								"ROMVER \"%s\" (%s), %d NVM errors.\n",
++								nvm[0x180],
++								nvm[0x181],
++								nvm[NVM_FAKE_REGION],
++								nvm[NVM_REAL_REGION],
++								ps2_rom_version,
++								ps2_region_type,
++								nvm_errors);
++							continue;
++						}
++
++						eromdrvpath[12] = region;
++						rv = open(eromdrvpath, O_RDONLY);
++						if (rv >= 0) {
++							/* Region code seems to be correct. */
++							close(rv);
+ 						} else {
+-							error_printf("%d errors when reading NVRAM. Please set path "
+-								"to EROMDRV and reload modules.", nvm_errors);
++							/* No EROM driver for this region. That is normal
++							 * on consoles without DVD-Video support, and on
++							 * emulators that provide no rom1 at all -- it only
++							 * means no DVD-Video playback, so it must not
++							 * block startup with an error screen the user
++							 * cannot act on. Booting Linux does not need it. */
++							kprintf("No EROM driver at \"%s\" (region '%c', ROMVER \"%s\"). "
++								"DVD-Video support unavailable.\n",
++								eromdrvpath, region, ps2_rom_version);
+ 							continue;
+ 						}
+ 					}
+diff --git a/loader/pad.c b/loader/pad.c
+index 9c05f78..0893e02 100644
+--- a/loader/pad.c
++++ b/loader/pad.c
+@@ -33,8 +33,16 @@ void initializeController(void)
+ 
+ 	int slot = 0;				// Always zero if not using multitap
+ 
+-	if (padInit(0) != 0) {
+-		kprintf("padInit() failed.\n");
++	/* ps2sdk's libpad.h documents padInit() as "== 1 => OK". The original test
++	 * here was "!= 0", which treats the documented SUCCESS value as a failure:
++	 * padman loads and registers fine, then this returns early, padPortOpen()
++	 * is never reached and the loader comes up with no controller at all --
++	 * which also makes every "Press CROSS to continue" prompt undismissable.
++	 * Testing against the documented success value rather than against zero
++	 * keeps this correct whichever convention a given ps2sdk uses. */
++	ret = padInit(0);
++	if (ret != 1) {
++		kprintf("padInit() failed: %d\n", ret);
+ 		return;
+ 	}
+ 
+diff --git a/loader/stdint.h b/loader/stdint.h
+deleted file mode 100644
+index 0550346..0000000
+--- a/loader/stdint.h
++++ /dev/null
+@@ -1,16 +0,0 @@
+-/* Copyright (c) 2007 Mega Man */
+-#ifndef _STDINT_H_
+-#define _STDINT_H_
+-
+-typedef unsigned char uint8_t;
+-typedef unsigned short uint16_t;
+-typedef unsigned int uint32_t;
+-typedef unsigned /*long*/ long uint64_t;
+-typedef unsigned int uint128_t __attribute__((mode(TI), aligned(16)));
+-typedef signed char int8_t;
+-typedef signed short int16_t;
+-typedef signed int int32_t;
+-typedef signed /*long*/ long int64_t;
+-typedef __signed__ int int128_t __attribute__((mode(TI), aligned(16)));
+-
+-#endif
 diff --git a/modules/SMSCDVD/SMSCDVD.c b/modules/SMSCDVD/SMSCDVD.c
 index d7a4219..8e78129 100644
 --- a/modules/SMSCDVD/SMSCDVD.c

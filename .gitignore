@@ -61,3 +61,6 @@ bin/
 *Zone.Identifier*
 clouds.png
 "ChatGPT Image*"
+
+# Boot-test payload: downloaded kernel/initrd and assembled USB tree
+dist/

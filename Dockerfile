@@ -13,7 +13,17 @@ FROM ghcr.io/ps2dev/ps2dev:latest
 # gcc/musl-dev: kernelloader builds HOST tools (ppm2rgb, png2rgb) as well as
 #   EE code, so it needs a native compiler too.
 # libpng/zlib/tiff -dev: png2rgb links libpng; the loader pulls tiff and zlib.
-RUN apk add --no-cache make bash gcc musl-dev libpng-dev zlib-dev tiff-dev
+#
+# perl/coreutils: loader/Makefile generates rominitialize.h, which carries the
+#   width/height/depth of every embedded .rgb image. That rule guards the image
+#   fields with `cut -d '_' -f 1 --complement` and derives the macro prefix with
+#   a perl one-liner. Alpine has neither: busybox cut rejects --complement, so
+#   the guard fails and the block never runs, and perl is absent entirely.
+#   The build still succeeds -- it just silently emits no width/height/depth for
+#   any texture, leaving them 0. Every image then draws as a 0x0 sprite: no
+#   error, nothing on screen, and no clue why. coreutils supplies GNU cut.
+RUN apk add --no-cache make bash gcc musl-dev libpng-dev zlib-dev tiff-dev \
+                       perl coreutils
 
 # kernel/Makefile (and others) hardcode the old ee-* tool names. Modern ps2sdk
 # renamed everything to the mips64r5900el-ps2-elf-* triple, so alias them

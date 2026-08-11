@@ -82,51 +82,103 @@ Defined in `loader/configuration.h`:
 #define USB_CONFIG_FILE   "mass0:CONFIG.TXT"
 ```
 
-**Only two of these are loaded automatically at startup.** There is exactly one
-`loadConfiguration()` call in the startup path (`loader/loadermenu.cpp:730`),
-operating on a `configfile` buffer initialised by
-`strcpy(configfile, CONFIG_FILE)` — so `mc0:kloader/config.txt`, with
-`cdfs:config.txt` taking over when booting from a disc.
+**Four of these are tried at startup, as a fallback chain.** The auto-load
+lives in `loadLoaderModules()` (`modules.c:334`), called once from
+`main.cpp:143`. A single `int lrv = -1` (`modules.c:341`) carries the result
+forward, and each later step runs only `if (lrv != 0)` — so the first file that
+parses wins and the rest are skipped.
 
-The others are **menu actions only**:
+| # | Call site | Path | Additional guard |
+|---|---|---|---|
+| 1 | `modules.c:410` | `mc0:kloader/config.txt` | the moduleList entry carrying `.loadCfg` |
+| 2 | `modules.c:533` | `mass0:PS2NS/CONFIG.TXT` | `load_netsurf_config` |
+| 3 | `modules.c:545` | `mass0:CONFIG.TXT` — **uppercase, at the stick root** | `load_usb_config` |
+| 4 | `modules.c:578` | `cdfs:config.txt` | `load_dvd_config && isDVDVSupported()` |
+
+Step 1 is positioned by *readiness*, not by line order. It hangs off the
+`.loadCfg = -1` field on the `rom0:PADMAN` entry (`modules.c:117`), whose
+comment reads `/* MC modules are loaded before this entry. */` — MCMAN and
+MCSERV are loaded two entries earlier, so this is the first moment in the boot
+at which a memory card can be read at all.
+
+That detail matters for the mc1 work: **MCMAN and MCSERV serve both slots**, so
+mc1 becomes readable at exactly the same instant mc0 does. A second attempt
+inserted beside step 1 needs no extra module loading and no reordering.
+
+The three `load_*_config` guards are function-scope `static int … = -1`
+(`modules.c:336-338`), zeroed on the first pass, as is `.loadCfg`
+(`modules.c:415`). The chain therefore runs on the initial boot only and is
+skipped when the IOP is reset later.
+
+```mermaid
+flowchart TD
+    S(["main.cpp:143<br/>calls loadLoaderModules"])
+    A1["<b>1. mc0:kloader/config.txt</b><br/><code>modules.c:410</code><br/><i>fires once MCMAN/MCSERV are up</i>"]
+    A2["<b>2. mass0:PS2NS/CONFIG.TXT</b><br/><code>modules.c:533</code>"]
+    A3["<b>3. mass0:CONFIG.TXT</b><br/><code>modules.c:545</code><br/><i>uppercase, stick root</i>"]
+    A4["<b>4. cdfs:config.txt</b><br/><code>modules.c:578</code><br/><i>only if isDVDVSupported()</i>"]
+    OK([config loaded → menu])
+    X["<b>mc1:kloader/config.txt</b><br/>not in the chain at all.<br/>CONFIG_DIR2 is defined but only<br/>ever passed to saveMcIcons()"]
+    M3["<b>any path</b>, incl. mc1:<br/><i>Select Config File → browse</i>"]
+
+    S --> A1
+    A1 -->|"lrv == 0"| OK
+    A1 -->|"lrv != 0"| A2
+    A2 -->|"lrv == 0"| OK
+    A2 -->|"lrv != 0"| A3
+    A3 -->|"lrv == 0"| OK
+    A3 -->|"lrv != 0"| A4
+    A4 --> OK
+    A1 x--x|"never tried"| X
+    OK -.->|"menu action,<br/>every boot"| M3
+
+    style A1 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style A2 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style A3 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style A4 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    style X fill:#f8cecc,stroke:#b85450,color:#1a1a1a
+    style M3 fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
+```
+
+All four also have a menu item, which re-runs that one path on demand through
+`mcLoadConfig()` regardless of what the startup chain did — useful when you have
+inserted a card or stick since boot:
 
 | Menu item | Path |
 |---|---|
 | Load Config from MC0 | `mc0:kloader/config.txt` |
 | Load Config from DVD | `cdfs:config.txt` |
-| Load Config from USB | `mass0:CONFIG.TXT` — **uppercase, at the stick root** |
+| Load Config from USB | `mass0:CONFIG.TXT` |
 | Load NetSurf Config from USB | `mass0:PS2NS/CONFIG.TXT` |
-| Save Config on MC0 | `mc0:kloader/config.txt` |
 
-```mermaid
-flowchart TD
-    S([kernelloader starts]) --> AUTO["one loadConfiguration() call<br/>on configfile = CONFIG_FILE"]
-    AUTO --> A1["<b>mc0:kloader/config.txt</b>"]
-    AUTO --> A2["<b>cdfs:config.txt</b><br/><i>when booting from disc</i>"]
-    A1 --> UI([menu])
-    A2 --> UI
+Saving is separate and mc0-only: `Save Config on MC0` →
+`mc0:kloader/config.txt`. `Save Selected Config` writes wherever the browser is
+pointing, which is the only way to put a config on mc1 from inside the UI.
 
-    UI -.->|menu action| M1["Load Config from USB<br/><code>mass0:CONFIG.TXT</code><br/><i>uppercase, stick root</i>"]
-    UI -.->|menu action| M2["Load NetSurf Config from USB<br/><code>mass0:PS2NS/CONFIG.TXT</code>"]
-    UI -.->|"Select Config File →<br/>browse"| M3["<b>any path</b><br/>incl. mc1:kloader/config.txt"]
+### Two lines that look like the startup path and are not
 
-    X["<b>mc1:kloader/config.txt</b><br/>CONFIG_DIR2 is defined but only<br/>ever used by saveMcIcons()"]
+Both turn up when grepping for the auto-load, and both are misleading:
 
-    UI x--x|"never loaded automatically"| X
+| Line | What it actually is |
+|---|---|
+| `loadermenu.cpp:730` | the `loadConfiguration()` inside `mcLoadConfig()` — a **menu callback**, reached only by pressing a button |
+| `loadermenu.cpp:882` | `strcpy(configfile, CONFIG_FILE)` inside `setDefaultConfiguration()` (which begins at `:867`) — it seeds the **file-browser default path**, and loads nothing |
 
-    style A1 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    style A2 fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    style X fill:#f8cecc,stroke:#b85450,color:#1a1a1a
-    style M3 fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
-```
-
-Solid arrows load automatically; dotted ones need a menu action every boot.
+The `configfile` buffer (`loadermenu.cpp:58`) is the browser's current
+selection, not an auto-load target. Nothing in the startup path reads it; steps
+1–4 above all pass string literals.
 
 ### CONFIG_DIR2 is a trap
 
 `CONFIG_DIR2` (`"mc1:kloader"`) exists but is referenced in exactly one place in
-the entire codebase — `saveMcIcons(CONFIG_DIR2)` in `configuration.cpp`. It is
-**never used for loading**. There is no "Load Config from MC1" menu item.
+the entire codebase — `saveMcIcons(CONFIG_DIR2)` at `configuration.cpp:255`,
+reached only when *saving* to a path that already begins `mc1:`. It is **never
+used for loading**, and there is no "Load Config from MC1" menu item.
+
+The startup chain above makes this sharper than a missing `#define` would
+suggest. kernelloader does not lack a search mechanism — it has a four-step one,
+and mc1 is simply absent from it, sitting between step 1 (`mc0:`) and step 2
+(`mass0:`) in every sense except the code.
 
 So if FreeMcBoot occupies mc0 and you keep everything Linux on mc1, your config
 is never found automatically. You can still reach it without typing:
@@ -140,6 +192,23 @@ Advanced Menu → File Menu → Select Config File → "Memory Card 2"
 `loadermenu.cpp`), and equivalents exist for the kernel and initrd pickers. But
 it is per boot: `configfile` is not itself a persisted configuration item, so it
 resets to the mc0 path on every launch.
+
+### config.txt is not the only thing pinned to mc0
+
+Worth knowing before scoping the fix, because a config file found on mc1 that
+then references modules kernelloader only looks for on mc0 is a half-fix:
+
+| Site | Count | What it does |
+|---|---|---|
+| `modules.c:436` | 13 of moduleList's 22 entries | entries with `.checkMc` try `mc0:kloader/<module>.irx` first, falling back to ROM/embedded — the user-override path for IOP modules |
+| `loader.c` | 18 entries in `modules[]` | literal `CONFIG_DIR "/…irx"` paths (`init.irx`, `sio2man.irx`, `mcman.irx`, `cdvdman.irx`, `module1-5.irx`, …) |
+| `getrte.c:44,55`, `getsbios.c:158`, `getelf.c:103` | 4 | `fileXioMkdir(CONFIG_DIR, …)` and writes *into* `CONFIG_DIR` |
+
+The first two are read paths and belong with the config search. The third group
+writes, so it wants the same answer the save path already gives: follow whichever
+card the config actually came from, as `saveConfiguration()` does at
+`configuration.cpp:236-257` when it picks between `CONFIG_DIR` and `CONFIG_DIR2`
+by inspecting `configfile[2]`.
 
 ### No command-line escape hatch
 
