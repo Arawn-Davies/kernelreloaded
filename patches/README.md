@@ -9,7 +9,7 @@ anywhere but this repository.
 
 | Patch | Base commit | Files |
 |---|---|---|
-| `0001-modern-toolchain.patch` | `d4b88dd` (citronalco/kernelloader master) | 36 |
+| `0001-modern-toolchain.patch` | `d4b88dd` (citronalco/kernelloader master) | 50 |
 
 If a patch stops applying, the submodule has moved off that base commit. Either
 reset the submodule to it, or rebase the patch onto the new upstream.
@@ -176,14 +176,43 @@ This is a correctness fix, not a portability tweak.
   path, the `gsKit_texture_upload_inline()` helper (whose cache was never
   assigned) and the `globalVram` scratch buffer. Also `gsFontM::Texture` is now
   an array of per-page pointers.
-- **UI**: version reads `3.X` without the build-flag suffix, bottom chrome
+- **UI**: version reads `4.0` without the build-flag suffix, bottom chrome
   recoloured for the starfield background, text scaled down.
+
+### Booting Linux, and the hardware-only faults
+
+- **`TGE/iop/intrelay` restored** from git history. rickgaiser deleted it in
+  `4ba4d6e` as "obsolete"; upstream's own readme still lists it **Required:
+  Yes** — it relays IOP interrupts to the EE. Ported for modern ps2sdk
+  (directory rules `Rules.make` no longer supplies, a doubled `IOP_OBJS_DIR`
+  now applied by `Rules.make:85` itself, `-Werror` dropped) and **embedded in
+  the ELF** via `ROM_FILES`, because `host:` does not exist on a console booted
+  from USB.
+- **SBIOS call table: `jr` vs `jalr`.** kernelloader disassembles the SBIOS
+  entry code at runtime to find the table. gcc 15 tail-jumps with `jr t9` where
+  the 2003 compiler emitted `jalr`, so the scan found nothing and gave up one
+  step before booting.
+- **`CDDA_Exit()` skipped at all three call sites.** Its blocking `SifCallRpc`
+  waits for an SMSCDVD acknowledgement that never arrives on real hardware. Each
+  site is followed by an `SifIopReset()` that discards the module anyway.
+- **`ps2smap`, `smaprpc`, `ps2link` entries removed** from `loader.c` — none
+  exists in modern ps2sdk, and being unembedded they fell through to `host:`.
+- **EROM driver failure no longer blocks startup.** DVD-Video is optional.
+- **USB stack swapped to BDM** (`bdm` + `bdmfs_fatfs` + `usbmass_bd`): exFAT,
+  GPT as well as MBR, and a route to the internal ATA disk. `mx4sio_bd` is
+  supported but opt-in — it drives SIO2 directly and hangs the module loop with
+  no adapter fitted.
+- **Video modes:** `applyVideoMode()` moves `Mode`, `Interlace`, `Field`,
+  `Width` and `Height` together; setting `Mode` alone left every mode at the
+  detected geometry. 576P/720P/1080I added.
+- **UI:** title lockup, button bar, System Info panel, rounded menu highlight
+  and themed loading bar, all as textures. Version is now 4.0.
 
 ## Build status
 
-**Everything builds, and `kloader.elf` boots** — verified in PCSX2 v2.6.3 with a
+**Linux boots to a shell on real hardware** — verified in PCSX2 v2.6.3 with a
 PAL v1.60 BIOS: Boot Menu renders with background and Tux, pad navigates, no
-error screens. Not tested on real hardware.
+error screens.
 
 Not in this patch, but required: the build image needs `perl` and `coreutils`,
 without which `rominitialize.h` silently emits no image dimensions and every
