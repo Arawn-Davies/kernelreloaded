@@ -14,13 +14,17 @@ flowchart LR
     classDef done fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     classDef stuck fill:#f8cecc,stroke:#b85450,color:#1a1a1a
     classDef todo fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4,color:#1a1a1a
-    class A,B,C,D,E,F,G done
-    class H stuck
+    class A,B,C,D,E,F,G,H done
 ```
 
-Green builds. `loader/` — the component that actually needs changing — is last,
-because everything before it is embedded into it; it now compiles and shows
-genuine porting work rather than the STLport wall.
+All green: the whole chain builds and `kloader.elf` boots. `loader/` — the
+component that actually needs changing — is last, because everything before it
+is embedded into it.
+
+Note that "builds" was never the finish line. Several of the worst faults here
+compiled and linked perfectly and only showed up at runtime; two of them
+produced an ELF that looked entirely plausible. Those are collected under
+[Runtime](#runtime--what-only-showed-up-once-it-booted) below.
 
 ---
 
@@ -308,28 +312,12 @@ new module is larger and need to be optimized for size."*
 
 ---
 
-## `modules/` — where it currently stops
+## `modules/` — cleared
 
 ### `'packed' attribute ignored for field of type 'u8[8]'`
 
 gcc now warns when `packed` is applied to fields that are already suitably
 aligned, and `-Werror` is on.
-
-### `request for member 'stat' in something not a structure or union`
-
-```c
-lpBuf->stat.mode = FIO_SO_IFREG;    /* SMSCDVD_UDFS.c:638 */
-```
-
-ps2sdk's fileio structures changed shape. This is genuine **API drift** rather
-than a flag or a language-standard issue, and it is where the port currently
-stands.
-
----
-
----
-
-## `modules/` — cleared
 
 ### `request for member 'stat' in something not a structure or union`
 
@@ -375,27 +363,312 @@ targeted suppressions, because that is where the genuine out-of-bounds bug in
 
 ---
 
-## `loader/` — where it stops now
+## `loader/` — cleared, and it boots
 
 `-Werror` had to go here too, and for a telling reason: with `-W` (`-Wextra`)
 it fails inside **ps2sdk's own headers**. `rom0_info.h` and `osd_config.h` trip
 `-Wunused-parameter` about twenty times before any kernelloader source is
 reached. `-Werror-implicit-function-declaration` is kept.
 
-Remaining, all genuine:
+### `loader/stdint.h` — do this one first
 
-- **Missing `<stdlib.h>`/`<malloc.h>`** — `memalign`, `free`, `realloc`, `atoi`
-  are all implicitly declared.
-- **`fioExit()`** — a removed ps2sdk fileio API; needs a modern equivalent
-  rather than a flag.
-- **Three incompatible-pointer-type call sites** — `disableSBIOSCalls`,
-  `load_file`, and an `int`-to-`char *` assignment. These need reading, not
-  suppressing.
-- **`loader/stdint.h` collides with newlib's** `sys/_stdint.h`, giving
-  conflicting `int32_t`/`uint32_t`/`int64_t`/`uint64_t`. Some files include
-  `"stdint.h"` and others `<stdint.h>` while `-I.` is in effect, so which one
-  wins varies by file. Pre-existing; only visible now that newlib defines these
-  types itself.
+It was listed last of four blockers. It should have been first, because it is
+not merely a name collision:
+
+```c
+typedef unsigned /*long*/ long uint64_t;   /* -> "unsigned long" */
+```
+
+The **same 64-bit defect already fixed twice** in `kernel/stdint.h` and
+`tge_types.h`, still present here because `loader/` had never built far enough
+to surface it. gcc confirms it: `previous declaration of 'uint64_t' with type
+'uint64_t' {aka 'long unsigned int'}` — 32-bit under n32.
+
+That matters because `loader/gs.h` got the same 600-line `packed` strip as
+`kernel/gs.h`, and 36 of its GS register-packing macros shift a `uint64_t` by
+32–56 bits. On a 32-bit type every field above bit 31 is discarded.
+
+It hid in the one place it was harmless: the conflict only errors in
+translation units that pull newlib's `sys/_stdint.h` (`loader.c` does, via
+`zlib.h`). Units that do not got the 32-bit version and compiled clean.
+
+Fixed by **deleting `loader/stdint.h`**. Its only content newlib does not
+provide is `uint128_t`/`int128_t`, referenced nowhere in `loader/`; with the
+file gone, `-I.` lets all ten include sites fall through to newlib's.
+
+### `fioExit()` was never removed
+
+Recorded here as a removed API. It is not — it is declared in ps2sdk's
+`ee/include/fileio.h`. `loader.c` simply never included that header; older SDKs
+pulled it in transitively. Same for `fioRemove`/`fioRmdir`/`fioPutc`. The whole
+category was six missing `#include`s across `loader.c`, `modules.c`,
+`loadermenu.cpp`, `kprint.c` and the three `get*.c` files.
+
+`fileio.h` and `fileXio_rpc.h` are guarded by `#ifndef NEWLIB_PORT_AWARE`, an
+opt-in acknowledgement that mixing fileio with newlib's POSIX layer on the same
+file can desynchronise. kernelloader does not do that, so `-DNEWLIB_PORT_AWARE`
+is set in `loader/Makefile`.
+
+### `sio_printf()` genuinely is gone
+
+Modern `sio.h` keeps `sio_putc`/`puts`/`putsn`/`write` but has no formatted
+variant. `main.cpp`, `crc32check.c` and `iopmem.c` all call it. Reimplemented in
+`kprint.c` over `sio_putsn()` — deliberately not via `kputs()`, which also
+mirrors to `iop_putc`/`fioPutc` where the original never did.
+
+### `-Dwint_t=int` is fatal on gcc 15
+
+`EE_CXXFLAGS` carried a set of STLport workarounds. modern ps2sdk ships no
+STLport at all, so they are vestigial — but `-Dwint_t=int` is actively fatal:
+gcc 15's `stddef.h` does `typedef __WINT_TYPE__ wint_t;`, which the define
+rewrites to `typedef unsigned int int;` — "multiple types in one declaration",
+before any source is read.
+
+### `gsFontM::Texture` became an array
+
+```c
+GSTEXTURE *Texture[GS_FONTM_PAGE_COUNT];   /* was a single GSTEXTURE * */
+```
+
+`gsFont->Texture->Clut` no longer compiles, and freeing only `[0]` would leak
+the other seven CLUTs on every video mode change.
+
+---
+
+## The link stage — two silent failures
+
+Both produced a plausible-looking ELF. Neither reported anything useful.
+
+### `ENTRY(_start)` — crt0 silently garbage-collected
+
+`loader/linkfile` names `_start`; modern ps2sdk's crt0 defines **`__start`**.
+The symbol never resolved, so ld warned once and defaulted the entry to
+`0x1000000` — and, because an unresolved `ENTRY` leaves nothing rooting it,
+**crt0 was collected out of the link entirely**. The result still linked, still
+packed, and would have jumped into whatever code happened to sit first in
+`.text` with no stack, heap or `.bss` setup.
+
+Verified both ways on a trivial program: with `_start` there is no `__start`
+symbol in the output at all; with `__start`, crt0 is retained and the ELF entry
+matches it.
+
+> The `crt0.o` prerequisite in `Makefile.eeglobal` is separate and genuinely
+> vestigial — the recipe never referenced it, and modern ps2sdk ships no
+> prebuilt `crt0.o` (`ee/startup/` holds only `linkfile`).
+
+### `tools/bin2s` — wrong symbol names, wrong section directive
+
+Two faults in this repo's own replacement:
+
+- It emitted `.section .data`. `loader/Makefile` post-processes bin2s output
+  with `sed -e "s/\.data/.section .rom/g"`, turning that into
+  `.section .section .rom` — "junk at end of line". The original emitted a bare
+  `.data`.
+- It named the size symbol `<sym>_size`. `romdefinitions.h` declares
+  `extern int size_<sym>;`. Everything assembles and links right up to the final
+  ELF, then fails with ~30 `undefined reference to 'size_*'`.
+
+---
+
+## Runtime — what only showed up once it booted
+
+Building was not the end of it. These were found by running `kloader.elf` in
+PCSX2 (v2.6.3, PAL v1.60 BIOS).
+
+### The CRC check could never pass
+
+`crc32gen` patches a CRC into the `.crc32` section after linking. `crc32check.c`
+declared the table `const` with `.crc` implicitly `0`, so gcc 15 constant-folded
+every comparison to literal `0` and emitted no load at all. The ELF on disk was
+correctly patched (`0x038413d4`) while the running code compared against
+`0x00000000`.
+
+`volatile const` forces the runtime load. **Any table patched after linking must
+be `volatile`** — older compilers happening to keep the load is not something to
+rely on.
+
+### `padInit()` returns 1 on success
+
+`pad.c` tested `!= 0`, so it treated the documented success value as failure,
+returned before `padPortOpen()` and left the loader with no controller — which
+also makes every "Press CROSS to continue" prompt undismissable.
+
+### Region detection assumed NVRAM was readable
+
+The EROM driver path is region-suffixed, and the letter came from NVRAM alone.
+Any console or emulator whose NVRAM reads back blank produced a nonsense path
+and a blocking error screen. ROMVER is the better source and is already read at
+startup: its layout is `VVVVRTYYYYMMDD`, so `0160EC20011004` gives `E`. NVRAM is
+still preferred when it holds a plausible letter; ROMVER is the fallback. A
+missing EROM driver is now logged rather than blocking — it only means no
+DVD-Video playback.
+
+The error message there also had **six conversions and five arguments**, so its
+trailing `(%s)` printed stack garbage.
+
+### Every texture was 0×0
+
+The one that cost the most time, and the least interesting cause.
+
+`loader/Makefile` generates `rominitialize.h`, carrying each embedded image's
+width/height/depth. That rule guards the image fields with
+`cut -d '_' -f 1 --complement` and derives the macro prefix with a **perl**
+one-liner. The Alpine image had neither: busybox `cut` rejects `--complement`,
+so the guard failed and the block never ran; `perl` was absent too.
+
+The build succeeded and emitted **zero** width/height/depth lines. All three
+fields stayed 0, so every sprite drew at zero size — no error, no VRAM failure,
+independent of pixel format and of which upload path was taken.
+
+Three plausible hypotheses were tested and falsified before this was found (the
+inline slice-upload path, `png2rgb`'s alpha inversion, and an uninitialised
+`GSTEXTURE::Delayed`). What actually located it was one `kprintf` of each
+texture's dimensions at load. **Print the values before reasoning about the
+mechanism.**
+
+Fixed in the image: `apk add perl coreutils`.
+
+### gsKit gained a texture manager
+
+Independently, the manual workflow this code used — `gsKit_vram_alloc()` a slot,
+`gsKit_texture_upload()` into it, draw — is no longer how modern gsKit works. It
+expects `gsKit_TexManager_bind()` before use; the manager owns VRAM and decides
+what to upload. `ps2oom`'s `doomgeneric_ps2_gs.c` drives the same gsKit on the
+same toolchain and was the reference: `gsKit_TexManager_init()` after each
+`gsKit_init_screen()`, `bind()` per draw, `nextFrame()` after each flip,
+`Texture->Vram = 0`.
+
+That retired the height-slicing machinery, the `gsKit_texture_upload_inline()`
+helper (whose `lastMem`/`lastVram` cache was never assigned, so it never
+actually cached), and the `globalVram` scratch buffer — which had also been
+denying 196 KB of VRAM to the manager.
+
+Both changes landed together, so it is **not established** whether the manual
+path would work now that dimensions are correct.
+
+---
+
+---
+
+## Booting Linux — three more toolchain casualties
+
+Building and reaching the menu was not the end either. Getting as far as handing
+control to the kernel turned up three more.
+
+### The SBIOS call table: `jr` vs `jalr`
+
+The worst of the lot, because it fails at the very last step.
+
+kernelloader does not read the SBIOS call table address from a header. It
+**disassembles the SBIOS's own entry code at runtime**, walking instructions and
+maintaining a shadow register file, looking for the `jalr` that dispatches
+through the table:
+
+```c
+if ((value & 0x3f) == 9) {          /* jalr */
+    if (load[rs] != 0) jumpBase = load[rs];
+```
+
+The 2003 compiler emitted `jalr`. gcc 15 tail-jumps:
+
+```
+lui   v1,0x8001
+sll   v0,v0,0x2
+addiu v1,v1,-31800
+addu  v0,v0,v1
+lw    t9,0(v0)
+jr    t9          <- funct 8, not jalr's funct 9
+```
+
+So the scan never matched, `jumpBase` stayed 0, and the loader stopped with
+"SBIOS call table not found" *after* successfully loading everything else.
+Teaching the scanner `jr` (and `sll`, which indexes the table) resolves it
+immediately: `0x800083c8`.
+
+This is a category of breakage worth naming: **the loader introspects compiled
+code, so changing compiler changes its input.** Nothing about it is visible at
+build time.
+
+### `intrelay` was deleted upstream, and is not obsolete
+
+`loader.c` references `host:TGE/intrelay-direct.irx` but nothing in the tree
+builds it. rickgaiser removed it in `4ba4d6e` ("Remove irx modules no longer
+needed") with the note `intrelay -> obsolete`, alongside `dmarelay`, `eedebug`
+and `smaprpc` — the last two having moved to the `linux-firmware-ps2` repo.
+
+It is not obsolete for the 2.4.17-era kernels this loader targets. Upstream's
+own `readme.txt` is unambiguous: *"Redirects interrupts from IOP to EE.
+Required: Yes."* Without it the loader gets as far as the kernel and stops.
+
+Restored from git history (`git show 4ba4d6e^:TGE/iop/intrelay/...`) and ported:
+
+- `Rules.make` no longer supplies rules creating `IOP_OBJS_DIR`/`IOP_BIN_DIR`,
+  so `all` failed with "No rule to make target 'obj-direct/'". The four variants
+  need separate object directories because each is built with different `-D`
+  flags, so they cannot build in place the way `modules/SMSCDVD` does.
+- `iop/Rules.make:85` now applies the object directory itself
+  (`IOP_OBJS := $(IOP_OBJS:%=$(IOP_OBJS_DIR)%)`), so the Makefile's own
+  `addprefix` produced `obj-direct/obj-direct/intrelay.o`.
+- `-Werror` dropped, as everywhere else on the IOP side.
+
+`dmarelay` is deliberately **not** restored — upstream states it does not work.
+
+### What the handoff looks like when it works
+
+For reference, the tail of a successful handoff under PCSX2:
+
+```
+TLBs flushed.
+Jump to kernel!
+sbcall_cdvdinit stage 0
+...
+sbcall_cdvdinit stage 6
+TLB Miss, pc=0x800af838 addr=0xc0000070 [store]
+```
+
+`Jump to kernel!` is the last thing kernelloader prints. The `sbcall_*` lines
+after it come from **Linux calling into the SBIOS** — the clearest possible
+confirmation that the kernel is executing and that the SBIOS built here answers
+it.
+
+The TLB misses that follow are at `0xc00000xx`, i.e. **kseg2** — the mapped
+segment Linux uses for vmalloc and other kernel mappings, which by design must
+be resolved through the EE TLB. Under PCSX2 this is where the boot stops and the
+emulator falls over.
+
+That is a known weak spot rather than anything wrong with the loader: the EE
+MMU/TLB is barely exercised by games, so it is the least-tested path in the
+emulator, while Linux leans on it from its first moments. **Real hardware is the
+next test, not more emulator work** — and note that everything up to
+`Jump to kernel!` is fully verified, so a hardware attempt starts from a known
+good position.
+
+### The USB stack was 20 years old
+
+`usbhdfsd.irx` is FAT16/FAT32 only and predates BDM entirely. Replaced with the
+Block Device Manager stack that OPL, Neutrino and NHDDL use:
+
+```
+bdm.irx          manager; no dependencies beyond the kernel
+bdmfs_fatfs.irx  filesystem; imports bdm and ioman -> exFAT, via FatFs
+usbd.irx         USB host stack
+usbmass_bd.irx   USB block device; imports bdm and usbd
+```
+
+Load order follows those import lists and must not be reshuffled. `bdm` also
+ships GPT *and* MBR partition drivers, and `bdmfs_fatfs` registers as `"mass"`
+with a note that it "uses global connection order for full backward
+compatibility", so existing `mass0:` paths keep working.
+
+`mx4sio_bd.irx` (SD card in a memory card slot) is the same kind of transport
+and is supported, but is **opt-in** via `MX4SIO = yes` in `config.mk`: it drives
+SIO2 directly rather than through sio2man, and with no adapter fitted it does
+not return — it hangs the module loading loop and the loader never reaches its
+menu. That is exactly what happens under PCSX2.
+
+---
 
 Worth remembering: the change this port exists to enable — a `mc0:`/`mc1:`
-config search — lives **entirely in `loader/`**.
+config search — lived **entirely in `loader/`**, and is now done. It is a
+handful of lines beside step 1 of the startup chain; every other line in this
+document was the cost of being able to write them.

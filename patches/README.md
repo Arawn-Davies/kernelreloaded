@@ -9,7 +9,7 @@ anywhere but this repository.
 
 | Patch | Base commit | Files |
 |---|---|---|
-| `0001-modern-toolchain.patch` | `d4b88dd` (citronalco/kernelloader master) | 18 |
+| `0001-modern-toolchain.patch` | `d4b88dd` (citronalco/kernelloader master) | 36 |
 
 If a patch stops applying, the submodule has moved off that base commit. Either
 reset the submodule to it, or rebase the patch onto the new upstream.
@@ -146,21 +146,49 @@ This is a correctness fix, not a portability tweak.
   were all added by kernelloader, so this is its bug rather than TGE's — which
   is where a fix or an upstream report should go.
 
-## Build status at the time of writing
+### `loader/` — linking and running
 
-Builds: `ppm2rgb`, `png2rgb`, `hello`, `kernel/kernel.elf`, `sharedmem`,
-`TGE/sbios` (both variants), `modules/`, `crc32gen`.
+- **`loader/stdint.h` deleted.** It carried the *same* 64-bit defect already
+  fixed in `kernel/stdint.h` and `tge_types.h` — `unsigned /*long*/ long`,
+  i.e. 32-bit under n32 — which mattered because `loader/gs.h` has 36 GS
+  register macros shifting a `uint64_t` by 32–56 bits. Its only content newlib
+  does not provide is `uint128_t`/`int128_t`, used nowhere in `loader/`.
+- **Six missing `#include`s**, not a removed API: `fioExit()` and friends are
+  still in ps2sdk's `ee/include/fileio.h`. `-DNEWLIB_PORT_AWARE` added, which is
+  the opt-in those headers require.
+- **`sio_printf()` reimplemented** in `kprint.c` — this one really was removed.
+- **`-Dwint_t=int` dropped** from `EE_CXXFLAGS`. All the STLport defines are
+  vestigial now, but this one is fatal: it rewrites gcc 15's
+  `typedef __WINT_TYPE__ wint_t;` into `typedef unsigned int int;`.
+- **`linkfile`: `ENTRY(_start)` → `ENTRY(__start)`.** Modern crt0 uses the
+  two-underscore name. Unresolved, the entry symbol left nothing rooting crt0
+  and **it was garbage-collected out of the link** — producing a complete-looking
+  ELF whose entry pointed at arbitrary code with no stack or `.bss` setup.
+- **`crc32check.c`: `const` → `volatile const`.** gcc 15 constant-folded the
+  post-link-patched CRC to literal `0`, so the check could never pass.
+- **`pad.c`: `padInit(0) != 0` → `!= 1`.** ps2sdk documents `1` as success, so
+  this bailed on success and left the loader with no controller.
+- **`modules.c`: region detection falls back to ROMVER** when NVRAM is blank or
+  unrecognised, and a missing EROM driver no longer blocks startup. Also fixes a
+  format string with six conversions and five arguments.
+- **`graphic.cpp`: migrated to gsKit's texture manager** — `TexManager_init/bind/
+  invalidate/nextFrame`, manager-owned VRAM. Retires the manual slice-upload
+  path, the `gsKit_texture_upload_inline()` helper (whose cache was never
+  assigned) and the `globalVram` scratch buffer. Also `gsFontM::Texture` is now
+  an array of per-page pointers.
+- **UI**: version reads `3.X` without the build-flag suffix, bottom chrome
+  recoloured for the starfield background, text scaled down.
 
-`loader/` is reached and compiling — STLport is no longer the blocker, thanks
-to citronalco's fix. Four categories of genuine work remain:
+## Build status
 
-- missing `<stdlib.h>`/`<malloc.h>` — `memalign`, `free`, `realloc`, `atoi`
-- `fioExit()`, a removed ps2sdk fileio API needing a modern equivalent
-- three incompatible-pointer-type call sites, which need reading rather than
-  suppressing
-- `loader/stdint.h` colliding with newlib's, because some files include
-  `"stdint.h"` and others `<stdint.h>` while `-I.` is in effect
+**Everything builds, and `kloader.elf` boots** — verified in PCSX2 v2.6.3 with a
+PAL v1.60 BIOS: Boot Menu renders with background and Tux, pad navigates, no
+error screens. Not tested on real hardware.
+
+Not in this patch, but required: the build image needs `perl` and `coreutils`,
+without which `rominitialize.h` silently emits no image dimensions and every
+texture draws at 0×0. See the [`Dockerfile`](../Dockerfile).
 
 Note that the config-path change this port exists to enable — making
 kernelloader auto-load `mc1:kloader/config.txt` as well as `mc0:` — lives
-entirely in `loader/`. Everything built so far is prerequisite to linking it.
+entirely in `loader/`, and is still to do.

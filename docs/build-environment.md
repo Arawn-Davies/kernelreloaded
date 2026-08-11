@@ -55,7 +55,8 @@ is used for consistency with [ps2oom](https://github.com/Arawn-Davies/ps2oom).
 ### Host build tools
 
 ```dockerfile
-RUN apk add --no-cache make bash gcc musl-dev libpng-dev zlib-dev tiff-dev
+RUN apk add --no-cache make bash gcc musl-dev libpng-dev zlib-dev tiff-dev \
+                       perl coreutils
 ```
 
 `make`/`bash` are simply absent from the base image. The rest are less obvious:
@@ -63,6 +64,34 @@ kernelloader builds **host** programs as well as EE code. `ppm2rgb` and
 `png2rgb` run on the build machine to convert image assets into embeddable
 binary data, so they need a native compiler and libpng. `loader/` links tiff and
 zlib on the EE side.
+
+### `perl` and `coreutils` — the silent one
+
+These two are worth calling out, because their absence does not fail the build.
+It produces a working ELF that draws nothing.
+
+`loader/Makefile` generates `rominitialize.h`, which carries the width, height
+and colour depth of every embedded image:
+
+```make
+if [ "`echo $$file | cut -d '_' -f 1 --complement`" = "rgb" ]; then \
+    ufile="`echo $$file | perl -n -e \"s/_rgb\$$//g; print uc($$@);\"`"; \
+    echo "rom_files[i].width = $${ufile}_WIDTH;" >> rominitialize.h; \
+```
+
+Alpine satisfies neither half. Its `cut` is busybox, which rejects
+`--complement`, so the guard fails and the block never runs; `perl` is not
+installed at all, so it would fail even if the guard passed.
+
+The result: **zero** `width`/`height`/`depth` lines emitted, all three fields
+left at 0, and every texture drawn as a 0×0 sprite. No error, no VRAM failure,
+nothing on screen, and no indication which of the many plausible causes it was.
+`coreutils` supplies GNU `cut`.
+
+This is the same shape as the `bin2s` problem below — a host tool the 2000s
+build environment took for granted — but nastier, because `bin2s` fails loudly
+and this fails silently. If images ever stop appearing, check
+`loader/rominitialize.h` for `width` lines *first*.
 
 ### `ee-*` aliases
 
