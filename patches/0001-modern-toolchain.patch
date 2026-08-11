@@ -3997,7 +3997,7 @@ index b8259cb..dd94de0 100644
  		x += tex->Width;
  	}
 diff --git a/loader/modules.c b/loader/modules.c
-index 8e0c4ca..a942972 100644
+index 8e0c4ca..30f4741 100644
 --- a/loader/modules.c
 +++ b/loader/modules.c
 @@ -1,6 +1,16 @@
@@ -4267,6 +4267,28 @@ index 8e0c4ca..a942972 100644
  							continue;
  						}
  					}
+@@ -506,7 +645,20 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
+ 						network_support = 0;
+ 					} else {
+ 						if (moduleList[i].eromdrv != 0) {
+-							error_printf("Failed to load module \"%s\".", get_eromdrvpath());
++							/* The EROM driver only provides DVD-Video playback.
++							 * Failing to load it must not raise a blocking
++							 * error screen: it is not needed to boot Linux, and
++							 * there is nothing the user can do about it.
++							 *
++							 * It fails readily in practice. When rom1 is present
++							 * the code above concludes "old fat PS2" and strips
++							 * the region letter to plain "rom1:EROMDRV", which
++							 * opens but does not load on every BIOS. When rom1
++							 * is absent the region path is used instead. Either
++							 * way the outcome is the same: no DVD-Video.
++							 *
++							 * kprintf above already recorded it. */
++							kprintf("DVD-Video support unavailable.\n");
+ 						} else {
+ 							error_printf("Failed to load module \"%s\".", moduleList[i].path);
+ 						}
 diff --git a/loader/pad.c b/loader/pad.c
 index 9c05f78..0893e02 100644
 --- a/loader/pad.c
