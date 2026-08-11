@@ -3618,7 +3618,7 @@ index 722444f..c66eb0f 100644
  PHDRS
  {
 diff --git a/loader/loader.c b/loader/loader.c
-index a4df821..daad281 100644
+index a4df821..52a88ca 100644
 --- a/loader/loader.c
 +++ b/loader/loader.c
 @@ -1,11 +1,21 @@
@@ -3766,6 +3766,37 @@ index a4df821..daad281 100644
  
  	/* Initialize memboot parameter. */
  	memset(&bootpage, 0, sizeof(bootpage));
+@@ -2167,13 +2223,26 @@ static int real_loader(void)
+ 		CDVD_FlushCache();
+ #endif
+ 		if (isDVDVSupported()) {
+-			graphic_setStatusMessage("Stopping DVD");
+-
+-			/* Stop CD/DVD. */
++			/* Same treatment as the reboot path in loadermenu.cpp.
++			 *
++			 * CDDA_Exit() is NOT called: it issues a blocking SifCallRpc
++			 * (mode 0) asking the SMSCDVD IOP module to shut down and waits
++			 * for an acknowledgement that never arrives, hanging the boot on
++			 * a slim PSTwo with "Stopping DVD" on screen. The IOP reset a few
++			 * lines below discards that module wholesale, so the request buys
++			 * nothing, and the EE-side semaphore it would delete does not
++			 * outlive the reset either.
++			 *
++			 * One status message per call, so that if either of the remaining
++			 * two ever stalls the screen names it instead of leaving it to
++			 * guesswork. */
++			graphic_setStatusMessage("Stopping DVD: CDVD_Stop");
+ 			CDVD_Stop();
++
++			graphic_setStatusMessage("Stopping DVD: CDVD_FlushCache");
+ 			CDVD_FlushCache();
+ 
+-			CDDA_Exit();
++			graphic_setStatusMessage("Stopping DVD: done");
+ 		}
+ 
+ 		if (debug_mode == -1) {
 diff --git a/loader/loader.h b/loader/loader.h
 index 08024c4..c5f8fae 100644
 --- a/loader/loader.h
