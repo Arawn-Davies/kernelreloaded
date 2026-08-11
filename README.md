@@ -6,7 +6,7 @@ the PlayStation 2 Linux bootloader** — building again on a modern toolchain.
 <sub>Looking for <i>kernelloader ps2 build</i>, <i>kernelloader modern
 toolchain</i>, or <i>ps2 linux bootloader</i>? You're in the right place.</sub>
 
-![KernelReloaded UI design target](assets/mockup.png)
+![KernelReloaded UI design target](assets/src/mockup.png)
 
 > **A design target, not a screenshot.** The starfield and Tux are real and in
 > the build; the rest is where the UI is headed. What that costs splits neatly
