@@ -3618,7 +3618,7 @@ index 722444f..c66eb0f 100644
  PHDRS
  {
 diff --git a/loader/loader.c b/loader/loader.c
-index a4df821..a55b3f8 100644
+index a4df821..daad281 100644
 --- a/loader/loader.c
 +++ b/loader/loader.c
 @@ -1,11 +1,21 @@
@@ -3643,7 +3643,60 @@ index a4df821..a55b3f8 100644
  #include <iopcontrol.h>
  #include <debug.h>
  #include <osd_config.h>
-@@ -1781,6 +1791,54 @@ uint32_t *getSBIOSCallTable(char *addr)
+@@ -379,33 +389,25 @@ moduleEntry_t modules[] = {
+ 		.network = -1,
+ 		.debug_mode = -1,
+ 	},
+-	{
+-		.path = "host:ps2smap.irx",
+-		.buffered = -1,
+-		.argLen = 0,
+-		.args = NULL,
+-		.ps2smap = 1,
+-		.network = -1,
+-		.debug_mode = -1,
+-	},
+- 	{
+-		.path = "host:smaprpc.irx",
+-		.buffered = -1,
+-		.argLen = 0,
+-		.args = NULL,
+-		.defaultmod = 1,
+-		.slim = 1,
+-		.network = -1,
+-		.debug_mode = -1,
+-	},
+-	{
+-		.path = "host:ps2link.irx",
+-		.buffered = -1,
+-		.argLen = 0,
+-		.args = NULL,
+-		.network = -1,
+-		.debug_mode = -1,
+-	},
++	/* ps2smap.irx, smaprpc.irx and ps2link.irx entries removed.
++	 *
++	 * None of the three exists any more: ps2smap was renamed and restructured
++	 * in ps2sdk (the SMAP driver is now smap*.irx with different arguments),
++	 * while smaprpc and ps2link moved out to the linux-firmware-ps2 and
++	 * ps2dev/ps2link repositories -- rickgaiser removed them from TGE in the
++	 * same commit that took intrelay.
++	 *
++	 * Every path here is written "host:", but the embedded ROM is searched
++	 * first with the device prefix stripped, which is why the neighbouring
++	 * host:ps2ip.irx and host:ps2dev9.irx still resolve -- they are embedded.
++	 * These three are not, so they fell through to host:, which does not exist
++	 * on a console booted from USB, and raised a blocking error screen. It only
++	 * showed up on real hardware: under PCSX2, host: resolves to the directory
++	 * the ELF came from and quietly succeeded.
++	 *
++	 * The matching moduleList[] entries in modules.c are already gone. Note
++	 * upstream's readme warns these IOP network modules are mutually exclusive
++	 * with Linux's own SMAP driver in any case. */
+ 	{
+ 		.path = "host:sharedmem.irx",
+ 		.buffered = -1,
+@@ -1781,6 +1783,54 @@ uint32_t *getSBIOSCallTable(char *addr)
  				dprintf("addu r%d, r%d, r%d\n", rd, rs, rt);
  				regs[rd] = regs[rs] + regs[rt];
  			}
@@ -3698,7 +3751,7 @@ index a4df821..a55b3f8 100644
  			if ((value & 0x3f) == 9) {
  				/* jalr instruction */
  				int rs;
-@@ -2006,7 +2064,13 @@ static int real_loader(void)
+@@ -2006,7 +2056,13 @@ static int real_loader(void)
  	const char *kernel_filename = NULL;
  	uint32_t *initrd_header = NULL;
  	uint32_t initrd_start = 0;
@@ -3727,7 +3780,7 @@ index 08024c4..c5f8fae 100644
  #ifdef __cplusplus
  extern "C" {
 diff --git a/loader/loadermenu.cpp b/loader/loadermenu.cpp
-index 099d09f..e1961e1 100644
+index 099d09f..9957c59 100644
 --- a/loader/loadermenu.cpp
 +++ b/loader/loadermenu.cpp
 @@ -1,4 +1,9 @@
@@ -3740,7 +3793,33 @@ index 099d09f..e1961e1 100644
  #include <gsKit.h>
  #include <loadfile.h>
  #include <kernel.h>
-@@ -1018,6 +1023,15 @@ int reloadModules(void *arg)
+@@ -413,13 +418,22 @@ int reboot(void *arg)
+ 	deinitializeController();
+ 
+ 	if (isDVDVSupported()) {
+-		graphic_setStatusMessage("Stopping DVD");
+-
+-		/* Stop CD/DVD. */
++		/* One message per call rather than one for the group.
++		 *
++		 * Reported hanging at "Stopping DVD" on a slim PSTwo, which narrowed it
++		 * to these three calls but no further -- they all sat behind a single
++		 * status message. Each now names itself, so the screen identifies the
++		 * one that does not return instead of leaving it to guesswork. */
++		graphic_setStatusMessage("Stopping DVD: CDVD_Stop");
+ 		CDVD_Stop();
++
++		graphic_setStatusMessage("Stopping DVD: CDVD_FlushCache");
+ 		CDVD_FlushCache();
+ 
++		graphic_setStatusMessage("Stopping DVD: CDDA_Exit");
+ 		CDDA_Exit();
++
++		graphic_setStatusMessage("Stopping DVD: done");
+ 	}
+ 
+ 	graphic_setStatusMessage("Exit IOP Heap");
+@@ -1018,6 +1032,15 @@ int reloadModules(void *arg)
  	return 0;
  }
  
@@ -3756,7 +3835,7 @@ index 099d09f..e1961e1 100644
  void initMenu(Menu *menu)
  {
  	int i;
-@@ -1040,11 +1054,16 @@ void initMenu(Menu *menu)
+@@ -1040,11 +1063,16 @@ void initMenu(Menu *menu)
  	menu->addItem("Edit Video Parameter", editString, videoParameter);
  	menu->addItem(" Set to current mode", setDefaultVideoParameterMenu, videoParameter);
  	menu->addItem("Load Config from MC0", mcLoadConfig, (void *) CONFIG_FILE);
@@ -3773,7 +3852,7 @@ index 099d09f..e1961e1 100644
  	advancedMenu->addItem(menu->getTitle(), setCurrentMenu, menu, getTexBack());
  
  	advancedMenu->addItem("Boot Current Config", loader, NULL);
-@@ -1053,8 +1072,10 @@ void initMenu(Menu *menu)
+@@ -1053,8 +1081,10 @@ void initMenu(Menu *menu)
  	fileMenu->addItem("Restore defaults", setDefaultConfiguration, NULL);
  	fileMenu->addItem("Load Selected Config", mcLoadConfig, configfile);
  	fileMenu->addItem("Save Config on MC0", mcSaveConfig, (void *) CONFIG_FILE);
@@ -3784,7 +3863,7 @@ index 099d09f..e1961e1 100644
  
  	Menu *configFileMenu = fileMenu->addSubMenu("Select Config File");
  	configFileMenu->addItem(fileMenu->getTitle(), setCurrentMenu, fileMenu, getTexBack());
-@@ -1120,6 +1141,10 @@ void initMenu(Menu *menu)
+@@ -1120,6 +1150,10 @@ void initMenu(Menu *menu)
  
  	strcpy(kernelFilename, EXAMPLE_KERNEL);
  	addConfigTextItem("KernelFileName", kernelFilename, MAX_PATH_LEN);
@@ -3795,7 +3874,7 @@ index 099d09f..e1961e1 100644
  	//linuxMenu->addItem("Show Filename", showText, (void *) &kernelFilename);
  	linuxMenu->addItem("Edit Filename", editString, (void *) &kernelFilename);
  	linuxMenu->addItem("Example Kernel", setExampleKernel, (void *) &kernelFilename);
-@@ -1363,8 +1388,27 @@ void initMenu(Menu *menu)
+@@ -1363,8 +1397,27 @@ void initMenu(Menu *menu)
  #endif
  	;
  
