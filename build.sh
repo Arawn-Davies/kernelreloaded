@@ -58,7 +58,14 @@ apply_patches
 
 # Custom UI artwork lives in assets/ rather than in the submodule, so the
 # kernelloader checkout stays clean and the patch stays free of binary blobs.
-# png2rgb converts these at build time; see docs/assets.md for the specs.
+# png2rgb converts these at build time.
+#
+# Only the top level of assets/ is copied, and every file there must be a
+# texture listed in loader/Makefile's RGB_FILES. Source artwork that is not
+# shipped -- the design mockup, full-resolution originals -- belongs in
+# assets/src/, which this glob deliberately does not descend into. Before that
+# split, mockup.png alone was copying 1.1 MB into the submodule on every build
+# for nothing.
 copy_assets() {
     local a
     for a in "${HERE}"/assets/*.png; do
