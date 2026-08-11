@@ -3780,7 +3780,7 @@ index 08024c4..c5f8fae 100644
  #ifdef __cplusplus
  extern "C" {
 diff --git a/loader/loadermenu.cpp b/loader/loadermenu.cpp
-index 099d09f..9957c59 100644
+index 099d09f..141da0f 100644
 --- a/loader/loadermenu.cpp
 +++ b/loader/loadermenu.cpp
 @@ -1,4 +1,9 @@
@@ -3793,7 +3793,7 @@ index 099d09f..9957c59 100644
  #include <gsKit.h>
  #include <loadfile.h>
  #include <kernel.h>
-@@ -413,13 +418,22 @@ int reboot(void *arg)
+@@ -413,13 +418,36 @@ int reboot(void *arg)
  	deinitializeController();
  
  	if (isDVDVSupported()) {
@@ -3812,14 +3812,29 @@ index 099d09f..9957c59 100644
 +		graphic_setStatusMessage("Stopping DVD: CDVD_FlushCache");
  		CDVD_FlushCache();
  
-+		graphic_setStatusMessage("Stopping DVD: CDDA_Exit");
- 		CDDA_Exit();
+-		CDDA_Exit();
++		/* CDDA_Exit() deliberately NOT called here.
++		 *
++		 * It issues a blocking SifCallRpc (mode 0) telling the SMSCDVD IOP
++		 * module to shut down, and waits for an acknowledgement that never
++		 * arrives -- confirmed hanging exactly here on a slim PSTwo, with the
++		 * two calls above completing normally.
++		 *
++		 * It is redundant regardless: SifIopReset() a few lines below tears the
++		 * IOP down completely, so asking a module to exit first buys nothing.
++		 * The only other thing CDDA_Exit() does is DeleteSema() on the EE side,
++		 * and that semaphore does not outlive the reset either.
++		 *
++		 * The two remaining callers (loader.c's Linux boot path and the DVD
++		 * handling in this file) are left alone: both are also followed by an
++		 * IOP reset, so they are candidates for the same treatment if either
++		 * turns out to hang too. */
 +
 +		graphic_setStatusMessage("Stopping DVD: done");
  	}
  
  	graphic_setStatusMessage("Exit IOP Heap");
-@@ -1018,6 +1032,15 @@ int reloadModules(void *arg)
+@@ -1018,6 +1046,15 @@ int reloadModules(void *arg)
  	return 0;
  }
  
@@ -3835,7 +3850,7 @@ index 099d09f..9957c59 100644
  void initMenu(Menu *menu)
  {
  	int i;
-@@ -1040,11 +1063,16 @@ void initMenu(Menu *menu)
+@@ -1040,11 +1077,16 @@ void initMenu(Menu *menu)
  	menu->addItem("Edit Video Parameter", editString, videoParameter);
  	menu->addItem(" Set to current mode", setDefaultVideoParameterMenu, videoParameter);
  	menu->addItem("Load Config from MC0", mcLoadConfig, (void *) CONFIG_FILE);
@@ -3852,7 +3867,7 @@ index 099d09f..9957c59 100644
  	advancedMenu->addItem(menu->getTitle(), setCurrentMenu, menu, getTexBack());
  
  	advancedMenu->addItem("Boot Current Config", loader, NULL);
-@@ -1053,8 +1081,10 @@ void initMenu(Menu *menu)
+@@ -1053,8 +1095,10 @@ void initMenu(Menu *menu)
  	fileMenu->addItem("Restore defaults", setDefaultConfiguration, NULL);
  	fileMenu->addItem("Load Selected Config", mcLoadConfig, configfile);
  	fileMenu->addItem("Save Config on MC0", mcSaveConfig, (void *) CONFIG_FILE);
@@ -3863,7 +3878,7 @@ index 099d09f..9957c59 100644
  
  	Menu *configFileMenu = fileMenu->addSubMenu("Select Config File");
  	configFileMenu->addItem(fileMenu->getTitle(), setCurrentMenu, fileMenu, getTexBack());
-@@ -1120,6 +1150,10 @@ void initMenu(Menu *menu)
+@@ -1120,6 +1164,10 @@ void initMenu(Menu *menu)
  
  	strcpy(kernelFilename, EXAMPLE_KERNEL);
  	addConfigTextItem("KernelFileName", kernelFilename, MAX_PATH_LEN);
@@ -3874,7 +3889,7 @@ index 099d09f..9957c59 100644
  	//linuxMenu->addItem("Show Filename", showText, (void *) &kernelFilename);
  	linuxMenu->addItem("Edit Filename", editString, (void *) &kernelFilename);
  	linuxMenu->addItem("Example Kernel", setExampleKernel, (void *) &kernelFilename);
-@@ -1363,8 +1397,27 @@ void initMenu(Menu *menu)
+@@ -1363,8 +1411,27 @@ void initMenu(Menu *menu)
  #endif
  	;
  
