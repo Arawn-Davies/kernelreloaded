@@ -85,7 +85,7 @@ toolchain work was for — and it now does.
 | [`docs/kernelloader-internals.md`](docs/kernelloader-internals.md) | Boot chain, SBIOS vs kernel stub vs vmlinux, the config system in full (search order, all keys, device prefixes, the `CONFIG_DIR2` trap), build components, the SBIOS memory budget, `config.mk` switches |
 | [`docs/build-environment.md`](docs/build-environment.md) | Every Dockerfile layer and why it exists; how ps2sdk's `Rules.make` behaves out-of-tree; the `IOP_INCS` / `IOP_WARNFLAGS` / `PS2SDKSRC` hooks; `build.sh` usage; the stale-object trap |
 | [`docs/porting-notes.md`](docs/porting-notes.md) | Every build failure in order, with the actual error and root cause — including the two real bugs gcc 15 uncovered |
-| [`patches/README.md`](patches/README.md) | Summary of the 18 patched files, grouped by cause |
+| [`patches/README.md`](patches/README.md) | Summary of the 50 patched files, grouped by cause |
 
 ## Which kernelloader?
 
@@ -149,14 +149,18 @@ The last two are worth noting: both are environment-level hooks that fix
 
 ## Status
 
-**The whole tree builds, and `kloader.elf` boots.** Everything from `ppm2rgb`
-through `loader/` compiles and links, and the result has been run in PCSX2
-(v2.6.3, PAL v1.60 BIOS): it reaches the Boot Menu, renders its background and
-Tux, and navigates with the pad, with no error screens.
+**Linux boots to a shell on real hardware.** A slim PSTwo, launched from a USB
+stick via wLaunchELF: kernelloader built on gcc 15 hands off to a 2001
+MontaVista 2.4.17 kernel, the initrd unpacks, USB enumerates as a SCSI device,
+and userspace comes up at a prompt.
 
-Getting `loader/` to link turned up several faults that had nothing to do with
-the four originally-documented blockers, and two that would have shipped a
-broken ELF silently:
+Under PCSX2 (v2.6.3) it gets as far as `Freeing initrd memory` and then faults
+in the EE MMU — the least-exercised path in the emulator and the first thing
+Linux leans on. That is an emulator limit, not a loader one.
+
+Getting there turned up faults that had nothing to do with the four
+originally-documented blockers, and two that would have shipped a broken ELF
+silently:
 
 | Fault | Why it mattered |
 |---|---|
@@ -179,21 +183,33 @@ serve both slots and are loaded two entries earlier, so it needs no extra module
 loading and no reordering. MC1 also gains the Load/Save/Delete menu entries it
 never had.
 
-### Booting Linux
+### Three bugs only real hardware could find
 
-**The kernel boots.** SBIOS set up, `vmlinux.gz` and initrd loaded, `intrelay`
-running on the IOP, TLBs flushed, control passed — and then Linux starts calling
-back into the SBIOS:
+Each of these passed under PCSX2 and failed on a console, for structural
+reasons rather than bad luck:
+
+| Fault | Why the emulator missed it |
+|---|---|
+| `intrelay` and `smaprpc` loaded from `host:` | PCSX2 resolves `host:` to the directory the ELF came from, so both quietly succeeded. On a console booted from USB there is no `host:` at all. `intrelay` is now embedded in the ELF; `smaprpc` no longer exists anywhere and its entry is gone. |
+| `CDDA_Exit()` hangs the boot | It issues a *blocking* `SifCallRpc` waiting for an SMSCDVD acknowledgement that never arrives. Needs a real IOP that declines to answer. Skipped at all three call sites — the `SifIopReset()` that follows each discards the module regardless. |
+| EROM driver failure raised a blocking error screen | Only reachable when `rom1` is present, which the first test BIOS lacked. DVD-Video is optional and now degrades to a log line. |
+
+`smaprpc` is flagged `.slim = 1`, so it only ever fires on a slim PSTwo — a fat
+console would have sailed past it.
+
+### Deploying
+
+`./tools/mkusb.sh` assembles a self-contained USB payload. `mass0:CONFIG.TXT` is
+already step 3 of the startup search, so a stick needs no memory card:
 
 ```
-Jump to kernel!
-sbcall_cdvdinit stage 0 ... stage 6
+./tools/mkusb.sh          # kloader.elf + CONFIG.TXT + vmlinux.gz + initrd.gz
+./tools/mkusb.sh --nfs    # NFS root instead; no initrd
 ```
 
-Under PCSX2 it then faults on `0xc00000xx` — kseg2, the TLB-mapped segment Linux
-uses for kernel mappings. The EE MMU is the least-exercised path in the emulator
-and the first thing Linux leans on, so that is where it stops. Everything up to
-the handoff is verified; **real hardware is the next test.**
+Copy the contents of `dist/usb/` to the stick root and launch `kloader.elf` from
+wLaunchELF. The NFS mode takes `PS2_IP`, `NFS_IP`, `GATEWAY`, `NETMASK` and
+`NFS_EXPORT` from the environment. **NFS boot is built but untested.**
 
 Three things were needed beyond the toolchain work:
 
@@ -203,8 +219,8 @@ Three things were needed beyond the toolchain work:
 | **`intrelay`** | Deleted upstream in `4ba4d6e` as "obsolete", but upstream's own readme still says **Required: Yes** — it relays IOP interrupts to the EE. Restored from git history and ported (directory rules, doubled `IOP_OBJS_DIR`, `-Werror`). |
 | **USB stack** | `usbhdfsd` replaced with **BDM** (`bdm` + `bdmfs_fatfs` + `usbmass_bd`), the stack OPL/Neutrino/NHDDL use — exFAT, GPT as well as MBR, and a route to the internal ATA disk. MX4SIO is available via `MX4SIO = yes`. |
 
-Still to do: the glyph-atlas text renderer, and confirming what Linux actually
-does after the handoff. Nothing has been tested on real hardware.
+Still to do: the glyph-atlas text renderer, two black video modes (VGA and
+480p), and an NFS boot test.
 
 One fix carries a caveat, though a smaller one than it first looked:
 `sif1_dmatags` alignment was reduced 64 → 16, because gcc 15 will not express
@@ -217,14 +233,20 @@ design it shipped with. Flagged in-code and in
 
 ## Roadmap
 
-- ~~Get `loader/` building~~ — done; it links and boots
-- Land the `mc0:`/`mc1:` config search — the reason this project exists
-- Verify on real hardware. Everything so far is PCSX2 only, on one PAL BIOS
+- ~~Get `loader/` building~~ — done
+- ~~Land the `mc0:`/`mc1:` config search~~ — done, the reason this project exists
+- ~~Verify on real hardware~~ — done; boots to a shell on a slim PSTwo
+- ~~Static UI chrome~~ — title lockup, button bar, System Info panel, rounded
+  menu highlight and loading bar are all in
+- **Glyph-atlas text renderer.** The one remaining piece that needs real new
+  code, and the thing blocking everything else: the ROM font is a single fixed
+  bitmap face whose only knob is scale, and `gsKit_fontm` cannot measure a
+  rendered string — so right-aligned panel values, a centred lockup and text
+  that does not clip are all impossible until it exists
+- Two black video modes (VGA, 480p). `applyVideoMode()` does not set
+  `StartX`/`StartY`/`MagH`/`MagV`, and 480p should be 720×480 not 640×480
+- Test the NFS boot mode — built, never run
 - Refreshed GUI configurator for kernelloader
-- Work toward the UI at the top of this file: the starfield and Tux are drawn,
-  so what remains is the static chrome (title lockup, menu highlight, info
-  panel, ×/△/○) and then a glyph-atlas text renderer to escape the BIOS ROM
-  font — still the one piece that needs real new code
 - Longer term, fold kernelloader's functions into a unified kernelreloaded UI —
   booting Linux, and possibly other \*nixes (a BSD build reportedly exists)
 

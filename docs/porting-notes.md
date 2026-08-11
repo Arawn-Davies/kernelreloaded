@@ -668,6 +668,86 @@ menu. That is exactly what happens under PCSX2.
 
 ---
 
+## Runtime, part two — what only real hardware could find
+
+Three faults passed cleanly under PCSX2 and failed on a console. None was bad
+luck; each was structural, and worth knowing before trusting an emulator run.
+
+### `host:` resolves to something under emulation and nothing on a console
+
+`loader.c` writes every module path in its `modules[]` table as `host:`.
+kernelloader searches the embedded ROM first, with the device prefix stripped,
+so `host:ps2ip.irx` finds the embedded `ps2ip.irx` and never touches `host:` at
+all. Modules that are *not* embedded fall through to the real `host:` device —
+which PCSX2 maps to the directory the ELF was loaded from, and which does not
+exist at all on a console booted from USB.
+
+Two modules were in that position:
+
+- **`intrelay`** — required, and now embedded in the ELF (added to `ROM_FILES`).
+- **`smaprpc`** — no longer exists anywhere to embed; entry removed, along with
+  `ps2smap` and `ps2link`. It is flagged `.slim = 1`, so it only ever fired on a
+  slim PSTwo; a fat console would never have reached it.
+
+The lesson generalises: **under PCSX2, a missing `host:` file is indistinguishable
+from a present one.** Any new module path needs checking against a console, or
+embedding.
+
+### A blocking RPC needs a real IOP to not answer
+
+Reboot, and later the Linux boot, hung with "Stopping DVD" on screen. Splitting
+that one status message into one per call pinned it immediately:
+
+```
+Stopping DVD: CDVD_Stop          -> returns
+Stopping DVD: CDVD_FlushCache    -> returns
+Stopping DVD: CDDA_Exit          -> never returns
+```
+
+`CDDA_Exit()` issues a blocking `SifCallRpc` (mode 0) asking the SMSCDVD IOP
+module to shut down, and waits for an acknowledgement that never arrives. Under
+emulation the RPC completed; on hardware it does not.
+
+It is redundant at all three call sites regardless — each is followed by a
+`SifIopReset()` that discards the module wholesale, so asking it to exit first
+buys nothing, and the EE-side semaphore it would delete does not outlive the
+reset. (`reloadModules()` looks different but reaches the same reset via
+`loadLoaderModules()`, `modules.c:455`.)
+
+### A better BIOS moved a failure rather than fixing it
+
+The EROM driver load failure raised a blocking error screen — but only when
+`rom1` is present, so switching PCSX2 to a BIOS with `ROM1`/`ROM2` files
+*introduced* it. With `rom1` absent, `open("rom1:EROMDRV")` fails and control
+falls to the region-detection path, which was already non-blocking. With `rom1`
+present, the open succeeds, `modules.c` concludes "old fat PS2", strips the
+region letter, and the *load* fails on a different branch that still had
+`error_printf`.
+
+Both routes end in "no DVD-Video", which is optional. Both now log and continue.
+
+---
+
+## What actually worked, as a method
+
+Two bugs cost most of the time in this port, and both yielded to the same thing:
+
+- **Every texture drew at 0×0** — three hypotheses were tested and falsified
+  (the inline upload path, `png2rgb`'s alpha inversion, an uninitialised
+  `GSTEXTURE::Delayed`) before one `kprintf` of each texture's dimensions at
+  load found it in seconds.
+- **"Hangs in DVD teardown"** — became a single word the moment three calls
+  behind one status message were given three messages.
+
+Reasoning from the source was wrong more often than right: the `sifrpc` packet
+stride, the `u64` widths on the RPC path, and `gsKit_TexManager_init` were all
+plausible, all argued from the code, and all wrong.
+
+**Print the values before reasoning about the mechanism.** On a platform with no
+debugger and a serial log, a `kprintf` is worth an hour of inference.
+
+---
+
 Worth remembering: the change this port exists to enable — a `mc0:`/`mc1:`
 config search — lived **entirely in `loader/`**, and is now done. It is a
 handful of lines beside step 1 of the startup chain; every other line in this
