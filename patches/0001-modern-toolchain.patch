@@ -3811,7 +3811,7 @@ index 08024c4..c5f8fae 100644
  #ifdef __cplusplus
  extern "C" {
 diff --git a/loader/loadermenu.cpp b/loader/loadermenu.cpp
-index 099d09f..141da0f 100644
+index 099d09f..e09dcbf 100644
 --- a/loader/loadermenu.cpp
 +++ b/loader/loadermenu.cpp
 @@ -1,4 +1,9 @@
@@ -3865,7 +3865,32 @@ index 099d09f..141da0f 100644
  	}
  
  	graphic_setStatusMessage("Exit IOP Heap");
-@@ -1018,6 +1046,15 @@ int reloadModules(void *arg)
+@@ -996,10 +1024,23 @@ int reloadModules(void *arg)
+ 
+ 	if (isDVDVSupported()) {
+ 		/* Always stop CD/DVD when an error happened. */
++		graphic_setStatusMessage("Stopping DVD: CDVD_Stop");
+ 		CDVD_Stop();
++
++		graphic_setStatusMessage("Stopping DVD: CDVD_FlushCache");
+ 		CDVD_FlushCache();
+ 
+-		CDDA_Exit();
++		/* CDDA_Exit() omitted, as in the reboot and Linux boot paths: its
++		 * blocking SifCallRpc waits on an SMSCDVD acknowledgement that never
++		 * arrives, and hangs on a slim PSTwo.
++		 *
++		 * Safe here for the same reason. loadLoaderModules() below resets the
++		 * IOP (modules.c:455) before reloading, discarding the module along
++		 * with everything else, and re-initialises CDDA and CDVD afterwards
++		 * (modules.c:708). So the module is torn down and rebuilt either way.
++		 *
++		 * This was the last of the three callers. */
++		graphic_setStatusMessage("Stopping DVD: done");
+ 	}
+ 
+ 	PS2KbdClose();
+@@ -1018,6 +1059,15 @@ int reloadModules(void *arg)
  	return 0;
  }
  
@@ -3881,7 +3906,7 @@ index 099d09f..141da0f 100644
  void initMenu(Menu *menu)
  {
  	int i;
-@@ -1040,11 +1077,16 @@ void initMenu(Menu *menu)
+@@ -1040,11 +1090,16 @@ void initMenu(Menu *menu)
  	menu->addItem("Edit Video Parameter", editString, videoParameter);
  	menu->addItem(" Set to current mode", setDefaultVideoParameterMenu, videoParameter);
  	menu->addItem("Load Config from MC0", mcLoadConfig, (void *) CONFIG_FILE);
@@ -3898,7 +3923,7 @@ index 099d09f..141da0f 100644
  	advancedMenu->addItem(menu->getTitle(), setCurrentMenu, menu, getTexBack());
  
  	advancedMenu->addItem("Boot Current Config", loader, NULL);
-@@ -1053,8 +1095,10 @@ void initMenu(Menu *menu)
+@@ -1053,8 +1108,10 @@ void initMenu(Menu *menu)
  	fileMenu->addItem("Restore defaults", setDefaultConfiguration, NULL);
  	fileMenu->addItem("Load Selected Config", mcLoadConfig, configfile);
  	fileMenu->addItem("Save Config on MC0", mcSaveConfig, (void *) CONFIG_FILE);
@@ -3909,7 +3934,7 @@ index 099d09f..141da0f 100644
  
  	Menu *configFileMenu = fileMenu->addSubMenu("Select Config File");
  	configFileMenu->addItem(fileMenu->getTitle(), setCurrentMenu, fileMenu, getTexBack());
-@@ -1120,6 +1164,10 @@ void initMenu(Menu *menu)
+@@ -1120,6 +1177,10 @@ void initMenu(Menu *menu)
  
  	strcpy(kernelFilename, EXAMPLE_KERNEL);
  	addConfigTextItem("KernelFileName", kernelFilename, MAX_PATH_LEN);
@@ -3920,7 +3945,7 @@ index 099d09f..141da0f 100644
  	//linuxMenu->addItem("Show Filename", showText, (void *) &kernelFilename);
  	linuxMenu->addItem("Edit Filename", editString, (void *) &kernelFilename);
  	linuxMenu->addItem("Example Kernel", setExampleKernel, (void *) &kernelFilename);
-@@ -1363,8 +1411,27 @@ void initMenu(Menu *menu)
+@@ -1363,8 +1424,27 @@ void initMenu(Menu *menu)
  #endif
  	;
  
