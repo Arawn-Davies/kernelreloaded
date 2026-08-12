@@ -288,6 +288,31 @@ MESA_LOADER_DRIVER_OVERRIDE=llvmpipe ./pcsx2-qt.AppImage -- kloader.elf
 There is no real cost: with the EE interpreter the emulator is CPU-bound at
 roughly 1% regardless of renderer.
 
+### The GPU is reachable under WSLg, and not worth using
+
+Mesa defaults to `llvmpipe` — a CPU rasteriser — so PCSX2's "hardware"
+renderer is software too unless told otherwise. The real GPU is reachable:
+`/dev/dxg` exists, `d3d12_dri.so` ships, and three variables switch to it.
+
+```sh
+GALLIUM_DRIVER=d3d12 MESA_LOADER_DRIVER_OVERRIDE=d3d12 \
+MESA_D3D12_DEFAULT_ADAPTER_NAME=Intel ./pcsx2-qt.AppImage ...
+```
+
+`GL_RENDERER` then reports `D3D12 (Intel(R) Graphics)` instead of `llvmpipe`.
+The adapter name matters: a Parsec virtual display can enumerate first and is
+not the real GPU.
+
+It renders **incorrectly**, though: models come out with black striped blocks
+over them, a texture-cache artefact of running PCSX2's GL backend on a
+translation layer. Ratchet and Clank managed about 48% speed that way. The
+software renderer (`Renderer = 13`) is correct and was already configured for
+this reason — treat that setting as deliberate, not stale.
+
+For actually playing anything, use the stock Windows install: it gets the GPU
+natively and carries none of the instrumentation in our build, which costs
+cycles on every event test.
+
 ### Input
 
 A physical controller needs `usbipd-win` to attach the USB device into WSL,
