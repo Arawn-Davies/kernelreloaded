@@ -5,7 +5,10 @@ ps2sdk, in the order the build hits them, with the actual error and why it
 happens. Kept because the errors are mostly *not* obvious from their message,
 and because several point at real bugs rather than portability noise.
 
-`patches/README.md` is the summary. This is the long version.
+These changes now live directly in the source tree. They were once carried as
+`patches/0001-modern-toolchain.patch`, applied into a submodule at build time;
+that arrangement is gone, but the patch's final form is still in history at
+`708c8ff` if you want the whole delta against pristine upstream in one file.
 
 ```mermaid
 flowchart LR

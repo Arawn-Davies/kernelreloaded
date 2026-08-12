@@ -11,17 +11,18 @@ without it.
 ```mermaid
 flowchart TD
     REPO["kernelreloaded<br/><i>your repo</i>"]
-    SUB["kernelloader/<br/><i>submodule — unmodified upstream</i>"]
-    PATCH["patches/*.patch"]
+    SUB["loader/<br/><i>kernelloader source,<br/>tracked directly</i>"]
+    ART["assets/*.png<br/><i>shipped textures</i>"]
     IMG["<b>kernelreloaded:local</b><br/>built from Dockerfile"]
     BASE["ghcr.io/ps2dev/ps2dev<br/><i>gcc 15, ps2sdk, gsKit</i>"]
-    RUN["docker run<br/>-v repo:/work"]
+    RUN["docker run<br/>-v repo:/work<br/>-w /work"]
     OUT["bin/*.elf"]
 
     BASE --> IMG
     REPO --> IMG
-    REPO --> PATCH
-    PATCH -->|"build.sh applies,<br/>idempotently"| SUB
+    REPO --> SUB
+    REPO --> ART
+    ART -->|"build.sh copies<br/>when changed"| SUB
     SUB --> RUN
     IMG --> RUN
     RUN --> OUT
@@ -31,9 +32,13 @@ flowchart TD
     style OUT fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
 ```
 
-The submodule is never modified in git — patches are applied to its working
-tree at build time, so it stays a clean checkout that can be rebased on
-upstream.
+The kernelloader source was a git submodule with our changes carried as
+`patches/*.patch` until August 2026, then briefly a nested `loader/` wrapper.
+Both are gone — see the README for why — and the tree now sits at the repo root,
+edited in place. What remains of that arrangement is the second half of
+`.gitignore`, which keeps the build's ~45 binaries and 17 generated headers out
+of git. (`patches/` still exists but holds only upstream's Linux kernel patch
+set.)
 
 ## Base image
 
@@ -105,7 +110,7 @@ RUN for f in /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-*; do
 `kernel/Makefile` sets `CROSS_COMPILE = ee-` and several Makefiles call
 `ee-strip`, `ee-objcopy`, `ee-size` directly. Modern ps2sdk renamed everything
 to the full target triple. Aliasing in the image fixes every call site at once
-and keeps the patch set free of mechanical renames.
+and avoids mechanical renames throughout the source.
 
 ### `PS2SDKSRC` — and why the installed SDK is not enough
 
@@ -179,7 +184,7 @@ mask something real.
 
 Note the EE side is deliberately different: `TGE/sbios` keeps `-Werror` with
 narrow, targeted suppressions, because that is exactly where a genuine
-out-of-bounds bug surfaced (`mc.c`, see `patches/README.md`).
+out-of-bounds bug surfaced (`mc.c`, see `porting-notes.md`).
 
 ### `tools/bin2s` on PATH
 
@@ -207,15 +212,13 @@ identical on WSL2, Linux and Cygwin. Nothing host-specific is committed.
 ```
 ./build.sh                   build
 ./build.sh clean             make clean + clear bin/
-./build.sh shell             interactive shell, cwd = /work/kernelloader
+./build.sh shell             interactive shell, cwd = /work
 ./build.sh <target> [...]    any other make target
 REBUILD_IMAGE=1 ./build.sh   force the toolchain image to rebuild
 ```
 
-It builds the image on first use and caches it thereafter, then applies
-`patches/*.patch` idempotently — checking `git apply --check --reverse` first,
-so re-running is safe and an already-patched tree is left alone. If a patch
-fails to apply it stops with the expected base commit rather than half-patching.
+It builds the image on first use and caches it thereafter, then copies any
+changed texture from `assets/` into the source tree before running `make`.
 
 ### Stale objects
 
@@ -236,7 +239,6 @@ seems to have no effect:
 ```bash
 git clone https://github.com/Arawn-Davies/kernelreloaded.git
 cd kernelreloaded
-git submodule update --init --recursive
 ./build.sh
 ```
 

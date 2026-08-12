@@ -71,7 +71,7 @@ ENV IOP_INCS="-I/usr/local/ps2dev/ps2sdk/iop/include"
 # reviewable — they simply no longer halt it. Note the EE side is treated
 # differently: TGE/sbios keeps -Werror, with narrowly targeted suppressions,
 # because that is where a genuine out-of-bounds bug surfaced (see
-# patches/README.md on mc.c).
+# docs/porting-notes.md on mc.c).
 ENV IOP_WARNFLAGS="-Wall"
 
 # tools/bin2s replaces the bin2s that modern ps2sdk dropped (it ships bin2c,

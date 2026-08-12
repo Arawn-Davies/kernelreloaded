@@ -27,8 +27,8 @@
 # become ".section .section .rom" and the assembler rejects it with
 # "junk at end of line". The original ps2sdk bin2s emitted a bare ".data".
 #
-# Kept in kernelreloaded rather than the kernelloader submodule so the upstream
-# checkout stays clean.
+# Kept in tools/ rather than inside the loader/ source tree so that tree stays
+# a clean copy of upstream's layout.
 
 set -eu
 
