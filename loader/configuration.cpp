@@ -103,6 +103,72 @@ class ConfigurationTextItem:ConfigurationItem {
 
 std::vector < ConfigurationItem * >configurationVector;
 
+/**
+ * Apply a single "key=value" line to the registered configuration items.
+ *
+ * @param buffer one line, modified in place: the '=' becomes a terminator so
+ *               the key can be compared directly. Lines without '=' (blank
+ *               lines, '#' comments) are ignored, as are unknown keys.
+ */
+static void applyConfigLine(char *buffer)
+{
+	char *val;
+	int len;
+
+	/* Strip the line ending. The old code did this unconditionally as
+	 * val[strlen(val) - 1] = 0, which silently ate the last character of the
+	 * value when the final line of a file had no trailing newline. */
+	len = strlen(buffer);
+	while ((len > 0) && ((buffer[len - 1] == '\n') || (buffer[len - 1] == '\r'))) {
+		buffer[--len] = 0;
+	}
+
+	val = strchr(buffer, '=');
+	if (val == NULL) {
+		return;
+	}
+	*val = 0;
+	val++;
+
+	std::vector < ConfigurationItem * >::iterator i;
+
+	for (i = configurationVector.begin(); i != configurationVector.end(); i++) {
+		const char *name = (*i)->getName();
+
+		if (strcmp(buffer, name) == 0) {
+			switch ((*i)->getType()) {
+			case CLASS_CONFIG_CHECK:
+				{
+					ConfigurationCheckItem *item;
+
+					item = (ConfigurationCheckItem *) * i;
+					item->readData(val);
+				}
+				break;
+			case CLASS_CONFIG_TEXT:
+				{
+					ConfigurationTextItem *item;
+
+					item = (ConfigurationTextItem *) * i;
+					item->readData(val);
+				}
+				break;
+			case CLASS_CONFIG_VIDEO:
+				{
+					ConfigurationVideoModeItem *item;
+
+					item = (ConfigurationVideoModeItem *) * i;
+					item->readData(val);
+				}
+				break;
+			default:
+				error_printf("Unsupported configuration type.");
+				break;
+			}
+		}
+	}
+}
+
 extern "C" {
 
 	int loadConfiguration(const char *configfile) {
@@ -112,64 +178,60 @@ extern "C" {
 		fd = fopen(configfile, "rt");
 		if (fd != NULL) {
 			while (!feof(fd)) {
-				char *val;
-
 				if (fgets(buffer, MAXIMUM_CONFIG_LENGTH, fd) == NULL) {
 					break;
 				}
-				val = strchr(buffer, '=');
-
-				if (val != NULL) {
-					std::vector < ConfigurationItem * >::iterator i;
-
-					/* remove carriage return. */
-					val[strlen(val) - 1] = 0;
-
-					*val = 0;
-					val++;
-					for (i = configurationVector.begin();
-						i != configurationVector.end(); i++) {
-						const char *name = (*i)->getName();
-
-						if (strcmp(buffer, name) == 0) {
-							switch ((*i)->getType()) {
-							case CLASS_CONFIG_CHECK:
-								{
-									ConfigurationCheckItem *item;
-
-									item = (ConfigurationCheckItem *) * i;
-									item->readData(val);
-								}
-								break;
-							case CLASS_CONFIG_TEXT:
-								{
-									ConfigurationTextItem *item;
-
-									item = (ConfigurationTextItem *) * i;
-									item->readData(val);
-								}
-								break;
-							case CLASS_CONFIG_VIDEO:
-								{
-									ConfigurationVideoModeItem *item;
-
-									item = (ConfigurationVideoModeItem *) * i;
-									item->readData(val);
-								}
-								break;
-							default:
-								error_printf("Unsupported configuration type.");
-								break;
-							}
-						}
-					}
-				}
+				applyConfigLine(buffer);
 			}
 			fclose(fd);
 			return 0;
 		} else {
 			return -1;
 		}
+	}
+
+	/**
+	 * Load a configuration embedded in the ELF as a ROM file.
+	 *
+	 * This is the last resort in the startup search chain: mc0:, mc1:, mass0:
+	 * and cdfs: are all tried first, so any real config always wins. It exists
+	 * so that a console with no config anywhere still gets sensible values,
+	 * and so that emulator runs can be driven without a writable memory card.
+	 *
+	 * @param name ROM file name, as listed in loader/Makefile's ROM_FILES.
+	 * @returns 0 when the ROM file was found and parsed, -1 when absent.
+	 */
+	int loadConfigurationFromRom(const char *name) {
+		static char line[MAXIMUM_CONFIG_LENGTH];
+		const rom_entry_t *romfile;
+		const char *p;
+		const char *end;
+
+		romfile = rom_getFile(name);
+		if (romfile == NULL) {
+			return -1;
+		}
+
+		p = (const char *) romfile->start;
+		end = p + romfile->size;
+
+		while (p < end) {
+			const char *nl;
+			int len;
+
+			nl = (const char *) memchr(p, '\n', end - p);
+			len = (nl != NULL) ? (int) (nl - p) : (int) (end - p);
+			if (len >= MAXIMUM_CONFIG_LENGTH) {
+				len = MAXIMUM_CONFIG_LENGTH - 1;
+			}
+			memcpy(line, p, len);
+			line[len] = 0;
+
+			applyConfigLine(line);
+
+			p = (nl != NULL) ? (nl + 1) : end;
+		}
+		return 0;
 	}
 
 	void saveMcIcons(const char *config_dir)

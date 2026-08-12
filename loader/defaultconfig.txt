@@ -1,0 +1,21 @@
+# Built-in fallback configuration, embedded into kloader.elf as a ROM file.
+#
+# This is used ONLY when every real config source has failed -- mc0:, mc1:,
+# mass0: and cdfs: are all tried first, so any card, stick or disc config
+# always wins over this one. On a console with a normal setup it is never
+# read.
+#
+# It exists for two reasons:
+#   - a card with no config still gets sane values rather than built-in
+#     compile-time defaults scattered across loadermenu.cpp
+#   - emulator runs become unattended, because there is no way to put a file
+#     where PCSX2 will let the guest see it without formatting a memory card
+#
+# AutoBootTime is 0 here on purpose: with no config anywhere, stopping at the
+# menu is the right behaviour on real hardware. Set it non-zero only in a
+# build you intend to boot unattended.
+
+KernelFileName=host:vmlinux.gz
+InitrdFileName=host:initrd.gz
+KernelParameter=root=/dev/ram0 rw ramdisk_size=16384
+AutoBootTime=0

@@ -32,6 +32,9 @@
 extern "C" {
 #endif
 int loadConfiguration(const char *configfile);
+int loadConfigurationFromRom(const char *name);
+/** ROM file name of the built-in fallback config; see loader/Makefile ROM_FILES. */
+#define ROM_CONFIG_FILE "defaultconfig.txt"
 void saveMcIcons(const char *config_dir);
 void saveConfiguration(const char *configfile);
 #ifdef __cplusplus
