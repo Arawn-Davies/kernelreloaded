@@ -23,6 +23,12 @@ part of it was broken, each fault hidden behind the previous one.
 | 2 | No TLB Invalid exception | `TLBL`/`TLBS` always vectored to the refill handler at `0x000`. An entry that is present but has `V=0` must vector to `0x180` instead. |
 | 3 | `TLBP` read `EntryHi` through an inverted bitfield union | `VPN2` was taken from the ASID end and `ASID` from the VPN2 end, then compared against a byte address. A probe of a live entry reported "not found". |
 | 4 | `MapTLB`/`UnmapTLB` ignored the ASID | The vtlb is one flat space, so every process's mappings went in together and the last writer won — one process read another's pages. |
+| 5 | Writes to a `D=0` page raised nothing | `MapTLB` mapped every page read-write regardless of `EntryLo.D`, and the vtlb has no read-only state, so **TLB Modified was an exception PCSX2 could never raise**. Copy-on-write depends on it entirely. |
+
+Numbers 2 and 5 are the same fault in two places: the vtlb records a page as
+either mapped or not, and both demand paging and copy-on-write need the states
+in between — *present but invalid*, and *present but read-only*. Adding those
+is what `vtlb_VMapWriteProtected()` and the refill/invalid split are for.
 
 Number 2 is the one that matters most. Demand paging is built entirely on the
 distinction PCSX2 could not represent: the refill handler installs the invalid
@@ -33,8 +39,20 @@ million faults a second on one address, `EntryLo0`/`EntryLo1` both zero, and
 **not one valid entry in the whole 48-entry TLB**.
 
 Each fix only exposed the next. In order, the boot went: stuck in the refill
-vector → userspace instructions executing → `INIT: version 2.78 booting` →
-`cpu_idle` with four live address spaces.
+vector → userspace instructions executing → `INIT: version 2.78 booting`, then
+a segmentation violation once init forked → copy-on-write faulting properly
+(86 TLB Modified exceptions, at ASID 1, 2 and 3 in succession, on consecutive
+pages, with `pc` in `ld.so`) and the kernel idle with 44/48 entries mapped.
+
+## Write protection
+
+`vtlb_VMapWriteProtected()` installs a handler for the page rather than a
+direct RAM pointer, because a direct pointer serves reads and writes alike.
+The handler resolves reads through the guest TLB itself and raises
+`EXC_CODE(1)` on any store. Pages are mapped `vaddr`→`vaddr` so the handler
+receives the virtual address the exception needs. It also drops any fastmem
+mapping for the page: fastmem hands stores straight to host memory with no
+handler in the way, so a page that must trap on write cannot have one.
 
 ## PCSX2_STRICT_USEG
 
