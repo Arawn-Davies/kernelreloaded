@@ -1,0 +1,592 @@
+diff --git a/pcsx2/COP0.cpp b/pcsx2/COP0.cpp
+index 15091881c..c04f65815 100644
+--- a/pcsx2/COP0.cpp
++++ b/pcsx2/COP0.cpp
+@@ -4,6 +4,8 @@
+ #include "Common.h"
+ #include "COP0.h"
+ 
++extern int eeTraceBudget;   // defined in R5900.cpp
++
+ // Updates the CPU's mode of operation (either, Kernel, Supervisor, or User modes).
+ // Currently the different modes are not implemented.
+ // Given this function is called so much, it's commented out for now. (rama)
+@@ -224,11 +226,24 @@ __fi void COP0_UpdatePCCR()
+ //
+ 
+ 
++// The vtlb is one flat address space with no notion of an ASID, so every
++// process's mappings used to be written into it together and the last writer
++// won -- one process could read another's pages at the same virtual address.
++// Nothing notices while there is a single address space, which is why this
++// only bites once init forks.
++static bool tlbBelongsToCurrentASID(const tlbs& t)
++{
++	return t.isGlobal() || (t.EntryHi.ASID == (cpuRegs.CP0.n.EntryHi & 0xff));
++}
++
+ void MapTLB(const tlbs& t, int i)
+ {
+ 	u32 mask, addr;
+ 	u32 saddr, eaddr;
+ 
++	if (!tlbBelongsToCurrentASID(t))
++		return;
++
+ 	COP0_LOG("MAP TLB %d: 0x%08X-> [0x%08X 0x%08X] S=%d G=%d ASID=%d Mask=0x%03X EntryLo0 PFN=%x EntryLo0 Cache=%x EntryLo1 PFN=%x EntryLo1 Cache=%x VPN2=%x",
+ 		i, t.VPN2(), t.PFN0(), t.PFN1(), t.isSPR() >> 31, t.isGlobal(), t.EntryHi.ASID,
+ 		t.Mask(), t.EntryLo0.PFN, t.EntryLo0.C, t.EntryLo1.PFN, t.EntryLo1.C, t.VPN2());
+@@ -291,6 +306,9 @@ __inline u32 ConvertPageMask(const u32 PageMask)
+ 
+ void UnmapTLB(const tlbs& t, int i)
+ {
++	if (!tlbBelongsToCurrentASID(t))
++		return;
++
+ 	//Console.WriteLn("Clear TLB %d: %08x-> [%08x %08x] S=%d G=%d ASID=%d Mask= %03X", i,t.VPN2,t.PFN0,t.PFN1,t.S,t.G,t.ASID,t.Mask);
+ 	u32 mask, addr;
+ 	u32 saddr, eaddr;
+@@ -392,6 +410,39 @@ void WriteTLB(int i)
+ namespace R5900 {
+ namespace Interpreter {
+ namespace OpcodeImpl {
++// The R5900's Random register is a free-running down-counter over the TLB
++// entries TLBWR is allowed to replace. It counts from 47 down to the value in
++// Wired and wraps, and hardware reloads it with 47 whenever Wired is written.
++//
++// It was never written here, so it held 0 for the life of the VM and every
++// TLBWR replaced entry 0 -- a 48-entry TLB acting as a one-entry one. Games do
++// not notice: they map memory with TLBWI at indices they choose and never
++// issue TLBWR. Linux does, in its TLB refill handler.
++static u32 cop0Random()
++{
++	const u32 wired = cpuRegs.CP0.n.Wired & 0x3f;
++
++	// Nothing left to rotate through (and 48 - wired must not underflow).
++	if (wired >= 47)
++		return 47;
++
++	return 47 - static_cast<u32>(cpuRegs.cycle % (48 - wired));
++}
++
++// Whether the guest ever writes a valid entry is the whole question: a zero
++// EntryLo means the refill handler loaded a zero PTE, which points upstream at
++// the page tables rather than at the TLB itself.
++static void eeTraceTlbWrite(const char* what, u32 idx)
++{
++	if (::eeTraceBudget <= 0)
++		return;
++	::eeTraceBudget--;
++	Console.WriteLn("  %s idx=%2u hi=%08x lo0=%08x lo1=%08x mask=%08x V=%d/%d",
++		what, idx, cpuRegs.CP0.n.EntryHi, cpuRegs.CP0.n.EntryLo0,
++		cpuRegs.CP0.n.EntryLo1, cpuRegs.CP0.n.PageMask,
++		(cpuRegs.CP0.n.EntryLo0 >> 1) & 1, (cpuRegs.CP0.n.EntryLo1 >> 1) & 1);
++}
++
+ namespace COP0 {
+ 
+ 	void TLBR()
+@@ -432,12 +483,15 @@ namespace COP0 {
+ 			cpuRegs.CP0.n.Index, cpuRegs.CP0.n.PageMask, cpuRegs.CP0.n.EntryHi,
+ 			cpuRegs.CP0.n.EntryLo0, cpuRegs.CP0.n.EntryLo1);
+ 
++		eeTraceTlbWrite("TLBWI", j);
+ 		UnmapTLB(tlb[j], j);
+ 		WriteTLB(j);
+ 	}
+ 
+ 	void TLBWR()
+ 	{
++		cpuRegs.CP0.n.Random = cop0Random();
++
+ 		const u8 j = cpuRegs.CP0.n.Random & 0x3f;
+ 
+ 		if (j > 47)
+@@ -446,41 +500,42 @@ namespace COP0 {
+ 			return;
+ 		}
+ 
+-		DevCon.Warning("COP0_TLBWR %d:%x,%x,%x,%x\n",
++		COP0_LOG("COP0_TLBWR %d:%x,%x,%x,%x\n",
+ 			cpuRegs.CP0.n.Random, cpuRegs.CP0.n.PageMask, cpuRegs.CP0.n.EntryHi,
+ 			cpuRegs.CP0.n.EntryLo0, cpuRegs.CP0.n.EntryLo1);
+ 
++		eeTraceTlbWrite("TLBWR", j);
+ 		UnmapTLB(tlb[j], j);
+ 		WriteTLB(j);
+ 	}
+ 
+ 	void TLBP()
+ 	{
+-		int i;
+-
+-		union
+-		{
+-			struct
+-			{
+-				u32 VPN2 : 19;
+-				u32 VPN2X : 2;
+-				u32 G : 3;
+-				u32 ASID : 8;
+-			} s;
+-			u32 u;
+-		} EntryHi32;
+-
+-		EntryHi32.u = cpuRegs.CP0.n.EntryHi;
++		// The bitfield union that used to live here had EntryHi's fields in the
++		// opposite order to the register: VPN2 was read off the ASID end and
++		// ASID off the VPN2 end. It then compared that against VPN2(), which is
++		// a byte address (<<13), so the two were never on the same terms and a
++		// probe of a real entry reported "not found". Linux's TLB-invalid
++		// handler probes before it fixes an entry up, so it could never find
++		// the entry it had just installed.
++		const u32 probeVPN2 = cpuRegs.CP0.n.EntryHi & ~0x1fffu;
++		const u32 probeASID = cpuRegs.CP0.n.EntryHi & 0xff;
+ 
+ 		cpuRegs.CP0.n.Index = 0xFFFFFFFF;
+-		for (i = 0; i < 48; i++)
++
++		for (int i = 0; i < 48; i++)
+ 		{
+-			if (tlb[i].VPN2() == ((~tlb[i].Mask()) & (EntryHi32.s.VPN2)) && ((tlb[i].isGlobal()) || ((tlb[i].EntryHi.ASID & 0xff) == EntryHi32.s.ASID)))
+-			{
+-				cpuRegs.CP0.n.Index = i;
+-				break;
+-			}
++			// VPN2() has the entry's page mask already applied, so apply the
++			// same mask to the address being probed before comparing.
++			if (tlb[i].VPN2() != (probeVPN2 & ~(tlb[i].Mask() << 13)))
++				continue;
++			if (!tlb[i].isGlobal() && (tlb[i].EntryHi.ASID != probeASID))
++				continue;
++
++			cpuRegs.CP0.n.Index = i;
++			break;
+ 		}
++
+ 		if (cpuRegs.CP0.n.Index == 0xFFFFFFFF)
+ 			cpuRegs.CP0.n.Index = 0x80000000;
+ 	}
+@@ -494,6 +549,12 @@ namespace COP0 {
+ 		//if(bExecBIOS == FALSE && _Rd_ == 25) Console.WriteLn("MFC0 _Rd_ %x = %x", _Rd_, cpuRegs.CP0.r[_Rd_]);
+ 		switch (_Rd_)
+ 		{
++			case 1:
++				// Random is a counter, not a stored value.
++				cpuRegs.CP0.n.Random = cop0Random();
++				cpuRegs.GPR.r[_Rt_].SD[0] = (s32)cpuRegs.CP0.n.Random;
++				break;
++
+ 			case 12:
+ 				cpuRegs.GPR.r[_Rt_].SD[0] = (s32)(cpuRegs.CP0.r[_Rd_] & 0xf0c79c1f);
+ 				break;
+@@ -548,6 +609,37 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
+ 				cpuRegs.CP0.r[9] = cpuRegs.GPR.r[_Rt_].UL[0];
+ 				break;
+ 
++			case 10:
++			{
++				// EntryHi carries the ASID, so writing it can switch address
++				// space. Only 48 entries, and only on an actual switch.
++				const u32 oldASID = cpuRegs.CP0.n.EntryHi & 0xff;
++				const u32 newASID = cpuRegs.GPR.r[_Rt_].UL[0] & 0xff;
++
++				cpuRegs.CP0.n.EntryHi = cpuRegs.GPR.r[_Rt_].UL[0];
++
++				if (oldASID != newASID)
++				{
++					// Tear the old space down before building the new one:
++					// the two overlap, so interleaving them would leave the
++					// unmaps stamping on mappings just installed.
++					cpuRegs.CP0.n.EntryHi = (cpuRegs.CP0.n.EntryHi & ~0xffu) | oldASID;
++					for (int t = 0; t < 48; t++)
++						UnmapTLB(tlb[t], t);
++
++					cpuRegs.CP0.n.EntryHi = (cpuRegs.CP0.n.EntryHi & ~0xffu) | newASID;
++					for (int t = 0; t < 48; t++)
++						MapTLB(tlb[t], t);
++				}
++				break;
++			}
++
++			case 6:
++				// Writing Wired reloads Random with the top TLB index.
++				cpuRegs.CP0.n.Wired = cpuRegs.GPR.r[_Rt_].UL[0];
++				cpuRegs.CP0.n.Random = 47;
++				break;
++
+ 			case 12:
+ 				WriteCP0Status(cpuRegs.GPR.r[_Rt_].UL[0]);
+ 				break;
+diff --git a/pcsx2/Memory.cpp b/pcsx2/Memory.cpp
+index c65f19bea..dc65f9521 100644
+--- a/pcsx2/Memory.cpp
++++ b/pcsx2/Memory.cpp
+@@ -23,6 +23,7 @@ BIOS
+ */
+ 
+ #include "DEV9/DEV9.h"
++#include <cstdlib>
+ #include "IopHw.h"
+ #include "GS/Renderers/Common/GSFunctionMap.h"
+ #include "GS.h"
+@@ -1207,8 +1208,28 @@ void memReset()
+ 	memMapUserMem();
+ 	memSetKernelMode();
+ 
+-	vtlb_VMap(0x00000000,0x00000000,0x20000000);
+-	vtlb_VMapUnmap(0x20000000,0x60000000);
++	// The user segment is identity-mapped straight onto physical memory here,
++	// so an address the guest has NOT mapped still resolves rather than raising
++	// a TLB refill. Games never notice: they run from addresses the BIOS mapped
++	// for them and never demand-page. PS2 Linux depends on the fault --
++	// /sbin/init is linked at 0x00400000 with its data at 0x10000000, both
++	// inside this window -- so its first userspace instruction fetch silently
++	// reads whatever kernel memory happens to sit at that physical address
++	// instead of faulting the real page in.
++	//
++	// Gated on an environment variable rather than replaced outright: the
++	// identity map is what every game has been tested against, and this way one
++	// binary covers both.
++	if (std::getenv("PCSX2_STRICT_USEG"))
++	{
++		Console.WriteLn("memReset: strict user segment, 0-2GB faults unless the guest TLB maps it");
++		vtlb_VMapUnmap(0x00000000, 0x80000000);
++	}
++	else
++	{
++		vtlb_VMap(0x00000000,0x00000000,0x20000000);
++		vtlb_VMapUnmap(0x20000000,0x60000000);
++	}
+ 
+ 	std::memset(s_ba, 0, sizeof(s_ba));
+ 
+diff --git a/pcsx2/R5900.cpp b/pcsx2/R5900.cpp
+index d6a196bc5..dab14597b 100644
+--- a/pcsx2/R5900.cpp
++++ b/pcsx2/R5900.cpp
+@@ -26,6 +26,7 @@
+ #include "DebugTools/MIPSAnalyst.h"
+ #include "DebugTools/SymbolGuardian.h"
+ #include "R5900OpcodeTables.h"
++#include "DebugTools/Debug.h"
+ 
+ #include "fmt/format.h"
+ 
+@@ -66,6 +67,7 @@ void cpuReset()
+ 	cpuRegs.pc				= 0xbfc00000; //set pc reg to stack
+ 	cpuRegs.CP0.n.Config	= 0x440;
+ 	cpuRegs.CP0.n.Status.val= 0x70400004; //0x10900000 <-- wrong; // COP0 enabled | BEV = 1 | TS = 1
++	cpuRegs.CP0.n.Random	= 47;   // top TLB index; counts down towards Wired
+ 	cpuRegs.CP0.n.PRid		= 0x00002e20; // PRevID = Revision ID, same as R5900
+ 	fpuRegs.fprc[0]			= 0x00002e30; // fpu Revision..
+ 	fpuRegs.fprc[31]		= 0x01000001; // fpu Status/Control
+@@ -91,12 +93,52 @@ void cpuReset()
+ 	CBreakPoints::ClearSkipFirst();
+ }
+ 
++bool eeTlbInvalidMatch = false;   // set by cpuTlbMiss, consumed here
++
++// Every exception except the timer interrupt, so the run-up to a userspace
++// fault can be read off directly instead of inferred. TLB misses are the
++// normal case and would drown everything else, so they are counted rather
++// than printed unless they are at an address that keeps repeating.
++static int eeExcBudget = 300;
++
++// The last few user-space faults, so an exception carries its own run-up
++// instead of needing to be correlated against a separate trace by hand.
++static u32 eeRecentUserFault[8];
++static u32 eeRecentUserFaultPC[8];
++static int eeRecentUserFaultAt = 0;
++
+ __ri void cpuException(u32 code, u32 bd)
+ {
+ 	bool errLevel2, checkStatus;
+ 	u32 offset = 0;
+ 
+     cpuRegs.branch = 0;		// Tells the interpreter that an exception occurred during a branch.
++	const bool tlbInvalid = eeTlbInvalidMatch;
++	eeTlbInvalidMatch = false;
++
++	{
++		const u32 excode = (code >> 2) & 0x1f;
++
++		// 0 = interrupt, 2/3 = the TLB misses that are the normal path,
++		// 8 = syscall, which the BIOS issues constantly.
++		if (excode != 0 && excode != 2 && excode != 3 && excode != 8 && eeExcBudget > 0)
++		{
++			eeExcBudget--;
++			Console.WriteLn("  EXC %u pc=%08x epc=%08x badv=%08x asid=%02x sr=%08x",
++				excode, cpuRegs.pc, cpuRegs.CP0.n.EPC, cpuRegs.CP0.n.BadVAddr,
++				cpuRegs.CP0.n.EntryHi & 0xff, cpuRegs.CP0.n.Status.val);
++
++			std::string recent;
++			for (int i = 0; i < 8; i++)
++			{
++				const int at = (eeRecentUserFaultAt + i) & 7;
++				if (eeRecentUserFault[at])
++					recent += StringUtil::StdStringFromFormat("%08x@%08x ",
++						eeRecentUserFault[at], eeRecentUserFaultPC[at]);
++			}
++			Console.WriteLn("      recent user faults: %s", recent.c_str());
++		}
++	}
+ 	cpuRegs.CP0.n.Cause = code & 0xffff;
+ 
+ 	if(cpuRegs.CP0.n.Status.b.ERL == 0)
+@@ -106,7 +148,7 @@ __ri void cpuException(u32 code, u32 bd)
+ 		checkStatus = (cpuRegs.CP0.n.Status.b.BEV == 0); //  for TLB/general exceptions
+ 
+ 		if (((code & 0x7C) >= 0x8) && ((code & 0x7C) <= 0xC))
+-			offset = 0x0; //TLB Refill
++			offset = tlbInvalid ? 0x180 : 0x0; // TLB Invalid vs Refill
+ 		else if ((code & 0x7C) == 0x0)
+ 			offset = 0x200; //Interrupt
+ 		else
+@@ -164,8 +206,238 @@ __ri void cpuException(u32 code, u32 bd)
+ 	cpuUpdateOperationMode();
+ }
+ 
++// ---- kernelreloaded instrumentation ---------------------------------------
++// PS2 Linux writes its console to the GS framebuffer, so once the kernel is
++// running nothing it says reaches this log. When it stops there is no way from
++// the outside to tell a livelock from a halt from a spin inside a driver.
++//
++// This prints the whole EE state roughly once a second: pc with disassembly,
++// every GPR, the CP0 control registers with the exception cause decoded, the
++// stack, and all 48 TLB entries.
++//
++// It translates addresses itself rather than going through the vtlb, for two
++// reasons: a dump must never fault or recurse into the exception path it is
++// trying to describe, and going through the vtlb would show the mapping PCSX2
++// thinks it has rather than the one the guest's TLB actually describes -- the
++// difference between the two being exactly what is under suspicion.
++static u32 eeTlbMissCount = 0;
++static u32 eeTlbMissLast = 0;
++static u32 eeTlbMissPrev = 0;
++static u32 eeLastDump = 0;
++
++// Bounded because the failure runs at ~10M faults a second: enough events to
++// replay the sequence by hand, then silence.
++int eeTraceBudget = 400;
++
++static const char* eeSeg(u32 a)
++{
++	if (a >= 0xE0000000) return "kseg3";
++	if (a >= 0xC0000000) return "kseg2";
++	if (a >= 0xA0000000) return "kseg1";
++	if (a >= 0x80000000) return "kseg0";
++	return "useg";
++}
++
++// Walk the guest TLB by hand. Returns false when the address is genuinely
++// unmapped -- which is the interesting answer, not an error.
++static bool eeTranslate(u32 va, u32* pa)
++{
++	if (va >= 0x80000000 && va < 0xC0000000)
++	{
++		*pa = va & 0x1FFFFFFF;
++		return true;
++	}
++
++	for (int i = 0; i < 48; i++)
++	{
++		const u32 pageSize = (tlb[i].Mask() + 1) << 12;
++		const u32 base = tlb[i].VPN2();
++
++		if (va < base || va >= base + pageSize * 2)
++			continue;
++		if (!tlb[i].isGlobal() && (tlb[i].EntryHi.ASID != (cpuRegs.CP0.n.EntryHi & 0xff)))
++			continue;
++
++		const bool odd = (va - base) >= pageSize;
++		const EntryLo_t& lo = odd ? tlb[i].EntryLo1 : tlb[i].EntryLo0;
++		if (!lo.V)
++			return false;
++
++		*pa = (odd ? tlb[i].PFN1() : tlb[i].PFN0()) + ((va - base) & (pageSize - 1));
++		return true;
++	}
++	return false;
++}
++
++// MIPS raises two different exceptions for a failed translation, and they do
++// NOT share a vector:
++//
++//   no entry matches the address        -> TLB Refill,  vector 0x000
++//   an entry matches but has V=0        -> TLB Invalid, vector 0x180
++//
++// PCSX2 only ever knew "mapped or not" -- MapTLB skips V=0 entries entirely --
++// so it sent both to 0x000. That breaks demand paging, which is built on the
++// difference: the refill handler installs the (invalid) PTE it finds, and the
++// retry is meant to trap to 0x180 and reach do_page_fault, which allocates the
++// page. Sent back to 0x000 instead, the handler reinstalls the same zero PTE
++// forever. Games never notice because they map everything up front and never
++// demand-page.
++static bool eeTlbMatches(u32 va)
++{
++	for (int i = 0; i < 48; i++)
++	{
++		const u32 pageSize = (tlb[i].Mask() + 1) << 12;
++		const u32 base = tlb[i].VPN2();
++
++		if (va < base || va >= base + pageSize * 2)
++			continue;
++		if (!tlb[i].isGlobal() && (tlb[i].EntryHi.ASID != (cpuRegs.CP0.n.EntryHi & 0xff)))
++			continue;
++
++		// A matching entry that were valid would not have missed, so reaching
++		// here means it matched and was invalid.
++		return true;
++	}
++	return false;
++}
++
++static bool eeRead32(u32 va, u32* out)
++{
++	u32 pa;
++	if (!eeTranslate(va, &pa))
++		return false;
++	if (!eeMem || pa + 4 > Ps2MemSize::ExposedRam)
++		return false;
++	*out = *reinterpret_cast<u32*>(&eeMem->Main[pa]);
++	return true;
++}
++
++static const char* eeExcName(u32 code)
++{
++	switch (code)
++	{
++		case 0:  return "Int";
++		case 1:  return "TLBMod";
++		case 2:  return "TLBL";
++		case 3:  return "TLBS";
++		case 4:  return "AdEL";
++		case 5:  return "AdES";
++		case 6:  return "IBE";
++		case 7:  return "DBE";
++		case 8:  return "Sys";
++		case 9:  return "Bp";
++		case 10: return "RI";
++		case 11: return "CpU";
++		case 12: return "Ov";
++		case 13: return "Tr";
++		default: return "?";
++	}
++}
++
++static void cpuStateDump()
++{
++	// cpuRegs.cycle is declared u64 but wraps at 32 bits in practice, so a
++	// "next due" absolute deadline past 2^32 is never reached and the dump
++	// stops for good. Compare a 32-bit delta instead, which wraps with it.
++	static const u32 interval = 300 * 1000 * 1000;
++
++	if (static_cast<u32>(static_cast<u32>(cpuRegs.cycle) - eeLastDump) < interval)
++		return;
++	eeLastDump = static_cast<u32>(cpuRegs.cycle);
++
++	const u32 pc = cpuRegs.pc;
++	const u32 sp = cpuRegs.GPR.r[29].UL[0];
++	const u32 exc = (cpuRegs.CP0.n.Cause >> 2) & 0x1f;
++
++	Console.WriteLn("======== EE state @ cycle %llu ========", cpuRegs.cycle);
++	Console.WriteLn("pc   =%08x (%s)   sp=%08x (%s)   ra=%08x",
++		pc, eeSeg(pc), sp, eeSeg(sp), cpuRegs.GPR.r[31].UL[0]);
++
++	// Instructions at pc, so a spin loop is identifiable on sight.
++	for (int i = 0; i < 6; i++)
++	{
++		u32 word;
++		if (!eeRead32(pc + i * 4, &word))
++		{
++			Console.WriteLn("  %08x: <unmapped>", pc + i * 4);
++			continue;
++		}
++		std::string text;
++		R5900::disR5900Fasm(text, word, pc + i * 4, false);
++		Console.WriteLn("  %08x: %08x  %s", pc + i * 4, word, text.c_str());
++	}
++
++	Console.WriteLn("sr   =%08x  cause=%08x exc=%u(%s)  epc=%08x  errepc=%08x",
++		cpuRegs.CP0.n.Status.val, cpuRegs.CP0.n.Cause, exc, eeExcName(exc),
++		cpuRegs.CP0.n.EPC, cpuRegs.CP0.n.ErrorEPC);
++	Console.WriteLn("badv =%08x  entryhi=%08x (asid=%02x)  index=%08x random=%u wired=%u",
++		cpuRegs.CP0.n.BadVAddr, cpuRegs.CP0.n.EntryHi, cpuRegs.CP0.n.EntryHi & 0xff,
++		cpuRegs.CP0.n.Index, cpuRegs.CP0.n.Random, cpuRegs.CP0.n.Wired);
++	Console.WriteLn("lo0  =%08x  lo1=%08x  pagemask=%08x  context=%08x  count=%08x compare=%08x",
++		cpuRegs.CP0.n.EntryLo0, cpuRegs.CP0.n.EntryLo1, cpuRegs.CP0.n.PageMask,
++		cpuRegs.CP0.n.Context, cpuRegs.CP0.n.Count, cpuRegs.CP0.n.Compare);
++	Console.WriteLn("tlb misses since last dump: %u  last=%08x prev=%08x",
++		eeTlbMissCount, eeTlbMissLast, eeTlbMissPrev);
++
++	for (int i = 0; i < 32; i += 4)
++	{
++		Console.WriteLn("  %-4s=%08x %-4s=%08x %-4s=%08x %-4s=%08x",
++			R5900::GPR_REG[i + 0], cpuRegs.GPR.r[i + 0].UL[0],
++			R5900::GPR_REG[i + 1], cpuRegs.GPR.r[i + 1].UL[0],
++			R5900::GPR_REG[i + 2], cpuRegs.GPR.r[i + 2].UL[0],
++			R5900::GPR_REG[i + 3], cpuRegs.GPR.r[i + 3].UL[0]);
++	}
++
++	std::string line;
++	for (int i = 0; i < 8; i++)
++	{
++		u32 word;
++		line += StringUtil::StdStringFromFormat(
++			eeRead32(sp + i * 4, &word) ? "%08x " : "-------- ", word);
++	}
++	Console.WriteLn("stack@sp: %s", line.c_str());
++
++	int valid = 0;
++	for (int i = 0; i < 48; i++)
++	{
++		if (!tlb[i].EntryLo0.V && !tlb[i].EntryLo1.V)
++			continue;
++		valid++;
++		Console.WriteLn("  tlb[%2d] vpn2=%08x size=%6uk pfn0=%08x%s pfn1=%08x%s asid=%02x%s",
++			i, tlb[i].VPN2(), ((tlb[i].Mask() + 1) << 12) / 1024,
++			tlb[i].PFN0(), tlb[i].EntryLo0.V ? "" : "(inv)",
++			tlb[i].PFN1(), tlb[i].EntryLo1.V ? "" : "(inv)",
++			tlb[i].EntryHi.ASID, tlb[i].isGlobal() ? " G" : "");
++	}
++	Console.WriteLn("tlb entries in use: %d/48", valid);
++
++	eeTlbMissCount = 0;
++}
++
+ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
+ {
++	eeTlbMissCount++;
++	eeTlbMissPrev = eeTlbMissLast;
++	eeTlbMissLast = addr;
++
++	// Must be decided before EntryHi is rewritten below, since the ASID in it
++	// is what the match is against.
++	eeTlbInvalidMatch = eeTlbMatches(addr);
++
++	if (addr < 0x80000000)
++	{
++		eeRecentUserFault[eeRecentUserFaultAt] = addr;
++		eeRecentUserFaultPC[eeRecentUserFaultAt] = cpuRegs.pc;
++		eeRecentUserFaultAt = (eeRecentUserFaultAt + 1) & 7;
++	}
++
++	if (eeTraceBudget > 0)
++	{
++		eeTraceBudget--;
++		Console.WriteLn("  TLBMISS addr=%08x epc/pc=%08x exc=%u hi=%08x ctx=%08x",
++			addr, cpuRegs.pc, excode, cpuRegs.CP0.n.EntryHi, cpuRegs.CP0.n.Context);
++	}
++
+ 	// Avoid too much spamming on the interpreter
+ 	if (Cpu != &intCpu || IsDebugBuild) {
+ 		Console.Error("cpuTlbMiss pc:%x, cycl:%x, addr: %x, status=%x, code=%x",
+@@ -361,6 +633,7 @@ static bool cpuIntsEnabled(int Interrupt)
+ __fi void _cpuEventTest_Shared()
+ {
+ 	eeEventTestIsActive = true;
++	cpuStateDump();
+ 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
+ 	cpuRegs.lastEventCycle = cpuRegs.cycle;
+ 	// ---- INTC / DMAC (CPU-level Exceptions) -----------------
