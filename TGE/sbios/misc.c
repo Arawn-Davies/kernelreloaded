@@ -149,9 +149,13 @@ void sio_puts(const char *b)
 /* Output a character over the serial port.  */
 int sbcall_putc(tge_sbcall_putc_arg_t *arg)
 {
-	iop_putc(arg->c);
+	/* Read through an unsigned char explicitly: the caller's struct is a
+	 * single byte at any alignment, so nothing here may widen the access. */
+	const unsigned char c = *(const volatile unsigned char *)arg;
 
-	return sio_putc(arg->c);
+	iop_putc(c);
+
+	return sio_putc(c);
 }
 
 /* This MUST return 0 if there are no characters in the RX FIFO.  */
