@@ -217,9 +217,14 @@ VFS: Mounted root (ext2 filesystem).
 Freeing unused kernel memory: 88k freed
 ```
 
-`VFS: Mounted root` and `Freeing unused kernel memory` together mean the kernel
-has handed control to userspace — the point at which the loader's job is
-demonstrably finished.
+`VFS: Mounted root` means the kernel has found and mounted the initrd, and
+`Freeing unused kernel memory` immediately precedes the `execve` of `init` --
+so between them they show the loader's job is finished and the handoff was
+clean.
+
+Under PCSX2 the screen currently stops there: the last line is `88k freed` and
+no userspace output follows. On real hardware the same build carries on to a
+shell prompt. See *What is still emulator-only*, below.
 
 ### Messages that are expected, not faults
 
