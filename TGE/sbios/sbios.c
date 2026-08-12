@@ -441,11 +441,11 @@ static void *dispatch[SBCALL_MAX] = {
 	/* 190 */
 	0,
 	/* 191 */
-	0,
+	(int (*)(void *)) sbcall_cdvdopenconfig,
 	/* 192 */
-	0,
+	(int (*)(void *)) sbcall_cdvdcloseconfig,
 	/* 193 */
-	0,
+	(int (*)(void *)) sbcall_cdvdreadconfig,
 	/* 194 */
 	0,
 	/* 195 */
