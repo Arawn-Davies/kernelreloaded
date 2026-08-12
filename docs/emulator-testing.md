@@ -85,6 +85,29 @@ driver never loaded.
 
 ## Emulator settings that matter
 
+### HostFs is off by default, and nothing works without it
+
+`[EmuCore] HostFs = false` is the default in a freshly generated
+`PCSX2.ini`. With it off, every `host:` path silently fails: the loader
+finds no `host:config.txt`, so no configuration is loaded and `AutoBootTime`
+never applies; and `cannot open host:vmlinux.gz` follows if a config is
+supplied another way.
+
+The failure is quiet and easy to misread as a broken build, a broken
+`host:` implementation, or a hung emulator. It cost hours here. A
+long-configured `PCSX2.ini` may well have `HostFs = true` already, which
+makes the difference between two machines baffling until you diff the inis.
+
+```
+HostFs = true
+```
+
+When it is on, the log states the root explicitly, which is worth checking:
+
+```
+HLE Host: Set 'host:' root path to: /path/to/kltest
+```
+
 ### The EE recompiler crashes; use the interpreter
 
 With the default recompiler, PCSX2 dies about two seconds after `Jump to
@@ -266,30 +289,122 @@ A physical controller needs `usbipd-win` to attach the USB device into WSL,
 which is rarely worth it. PCSX2's default keyboard bindings are enough to drive
 the loader menu: **arrow keys** to move, **K** for Cross, Return for Start.
 
-## A real gap: SBIOS calls 191–194
+## SBIOS calls 191-194: not cosmetic
 
-Repeated during boot:
+An earlier version of this document called these gaps optional and
+cosmetic, on the evidence of a kernel that called them once and carried
+on. That was wrong.
+
+`SBR_CDVD_OPENCONFIG` (191) and `CLOSECONFIG` (192) were dispatch-table
+zeros, so `sbios()` returned -1. PS2 Linux's `ps2sysconf` retries them.
+Booting the BlackRhino 2.4 live kernel produced **101 calls to 191 and
+100 to 192**, all failing, immediately followed by a SIF command
+interrupt storm (`fid 0x80000009` at microsecond intervals) that the
+boot never recovered from. A 100-iteration retry followed by collapse is
+a retry limit being exhausted.
+
+They are implemented now (see `TGE/sbios/scmd.c`), against ps2sdk's
+protocol in `ee/rpc/cdvd/src/scmd.c` -- the same RPC server
+(`CD_SERVER_SCMD 0x80000593`) and the same command numbers, which
+`scmd.c` had defined and never used. Measured on the same boot:
+
+| | before | after |
+|---|---|---|
+| log volume | 1.2 MB | 54 KB |
+| `191 not implemented` | 101 | 0 |
+| `192 not implemented` | 100 | 0 |
+| SIF storm | thousands | 0 |
+
+`WRITECONFIG` (194) is deliberately still absent: it writes the
+console's stored configuration through undersized shared buffers with a
+field mapping that is inferred rather than documented.
+
+### The buffer that has to be its own
+
+`READCONFIG` receives **0x408 bytes**. `sCmdRecvBuff` is **64**, because
+no other S-command needs more than 16. Transplanting ps2sdk's size
+without checking overruns it by 968 bytes into the SBIOS's fixed
+`0xEFE0` region and wedges the kernel the instant the reply DMA lands --
+with no fault reported, the trace simply stopping at the call after
+`READCONFIG`. It has a dedicated buffer now.
+
+---
+
+## poweroff.irx binds forever after handoff
+
+A SIF interrupt storm runs from partway through Linux's boot onwards.
+It is `SIF_CMD_RPC_BIND` (`SIF_CMD_ID_SYSTEM | 9`), and the raw packet
+identifies the culprit exactly:
 
 ```
-sbios_rpc: RPC failed, func=191 result=-1
+w2  80000009   fid (RPC_BIND)
+w6  00000515   rpc_id -- increments per packet, so these are distinct
+w7  00072670   client -- a low IOP address, so IOP -> EE
+w8  09090900   sid
 ```
 
-`sbios_rpc` is Linux-side, so this is PS2 Linux asking our SBIOS for a call it
-does not implement. **191 is `SBR_CDVD_OPENCONFIG`** (`kernel/sbcall.h:585`),
-and TGE implements none of the family:
+`0x9090900` is `PWROFF_IRX` (ps2sdk `common/include/pwroff_rpc.h`).
+`poweroff.irx`, which the loader loads, binds to an **EE-side** server
+that only exists while kernelloader is running:
 
-| Call | Number |
-|---|---|
-| `SBR_CDVD_OPENCONFIG` | 191 |
-| `SBR_CDVD_CLOSECONFIG` | 192 |
-| `SBR_CDVD_READCONFIG` | 193 |
-| `SBR_CDVD_WRITECONFIG` | 194 |
+```c
+while (sceSifBindRpc(&client, PWROFF_IRX, 0) < 0 || client.server == NULL)
+        DelayThread(500);
+```
 
-They postdate the TGE sources — `sbcall.h`'s own change history lists them as a
-later addition. The consequence is the `ps2sysconf: can't open osd` line
-immediately after: Linux cannot read the console's OSD configuration, so
-language, timezone and screen settings fall back to defaults.
+There is no bail-out, so once kernelloader hands over, the module
+retries for eternity and fires a SIF interrupt at the EE every ~7 ms,
+matching that `DelayThread`. Survivable -- hardware boots fine with it --
+but it is real, and it makes traces hard to read.
 
-This is **cosmetic** — the boot completes regardless, as the milestones above
-show — but it is a genuine hole in `TGE/sbios/cdvd.c` if anyone wants
-`ps2sysconf` working.
+Note the sid is only visible by dumping the packet: Linux registers its
+own handler for this command, so TGE's `sifrpc` `request_end()`, which
+would print it, never sees these.
+
+---
+
+## What is still emulator-only
+
+With the **2010** BlackRhino kernel, PCSX2 reaches
+`Freeing unused kernel memory: 88k freed` and stops. Userspace never
+starts, with either initrd -- including one whose `/sbin/init` is a shell
+script that prints immediately, so a successful `execve` could not be
+missed.
+
+The same `kloader.elf`, kernel, initrd and `CONFIG.TXT`, written to a
+USB stick, **boot to a shell on a real PS2**. So this is a PCSX2
+artefact, not a loader or SBIOS fault.
+
+Ruled out along the way, each by measurement rather than argument:
+memory pressure (identical 32 MB on both), `init=` not arriving (it is
+logged verbatim now), a PCSX2 regression since 2.6.3 (every data point
+was taken with `HostFs` off and no kernel loaded), the CDVD config gaps
+(fixed, still stalls) and `ps2ip` (still stalls without it).
+
+### The 2012 kernel is worse, not better
+
+Pairing a kernel and initrd from the same release sounds obviously right
+and was a wrong turn. A 2x2 settles which component is at fault:
+
+| kernel | initrd | result |
+|---|---|---|
+| 2010 | 2.2-era | reaches `88k freed` |
+| 2010 | 2012 | reaches `88k freed` |
+| 2012 | 2012 | stalls at `NET4:`, never finds the initrd |
+
+The kernel is the variable. Use the **2010** kernel for emulator work.
+
+---
+
+## Two traps that are not PCSX2's fault
+
+**`/mnt/c` is case-insensitive.** Copying `VMLINUX.GZ` next to an
+existing `vmlinux.gz` silently replaces it, so a run you believe is
+testing one kernel may be testing another. Give test payloads distinct
+names (`vmlinux_old.gz`, `vmlinux_new.gz`), never case variants.
+
+**PCSX2 escapes `timeout`.** The AppImage mounts its squashfs and
+re-execs; the real process is reparented away from the wrapper, its argv
+no longer contains the AppImage name, and its `comm` is truncated to 15
+characters. `timeout`, `pkill -f <appimage>` and `pkill -x pcsx2-qt` all
+fail to reap it. Use `tools/killpcsx2.sh`.
