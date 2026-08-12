@@ -1,5 +1,5 @@
 diff --git a/pcsx2/COP0.cpp b/pcsx2/COP0.cpp
-index 15091881c..c04f65815 100644
+index 15091881c..fb8d16f59 100644
 --- a/pcsx2/COP0.cpp
 +++ b/pcsx2/COP0.cpp
 @@ -4,6 +4,8 @@
@@ -36,7 +36,33 @@ index 15091881c..c04f65815 100644
  	COP0_LOG("MAP TLB %d: 0x%08X-> [0x%08X 0x%08X] S=%d G=%d ASID=%d Mask=0x%03X EntryLo0 PFN=%x EntryLo0 Cache=%x EntryLo1 PFN=%x EntryLo1 Cache=%x VPN2=%x",
  		i, t.VPN2(), t.PFN0(), t.PFN1(), t.isSPR() >> 31, t.isGlobal(), t.EntryHi.ASID,
  		t.Mask(), t.EntryLo0.PFN, t.EntryLo0.C, t.EntryLo1.PFN, t.EntryLo1.C, t.VPN2());
-@@ -291,6 +306,9 @@ __inline u32 ConvertPageMask(const u32 PageMask)
+@@ -256,7 +271,11 @@ void MapTLB(const tlbs& t, int i)
+ 			{
+ 				if ((addr & mask) == ((t.VPN2() >> 12) & mask))
+ 				{ //match
+-					memSetPageAddr(addr << 12, t.PFN0() + ((addr - saddr) << 12));
++					// D clear means the guest wants a store here to trap.
++					if (t.EntryLo0.D)
++						memSetPageAddr(addr << 12, t.PFN0() + ((addr - saddr) << 12));
++					else
++						memSetPageAddrReadOnly(addr << 12);
+ 					Cpu->Clear(addr << 12, 0x400);
+ 				}
+ 			}
+@@ -272,7 +291,11 @@ void MapTLB(const tlbs& t, int i)
+ 			{
+ 				if ((addr & mask) == ((t.VPN2() >> 12) & mask))
+ 				{ //match
+-					memSetPageAddr(addr << 12, t.PFN1() + ((addr - saddr) << 12));
++					// D clear means the guest wants a store here to trap.
++					if (t.EntryLo1.D)
++						memSetPageAddr(addr << 12, t.PFN1() + ((addr - saddr) << 12));
++					else
++						memSetPageAddrReadOnly(addr << 12);
+ 					Cpu->Clear(addr << 12, 0x400);
+ 				}
+ 			}
+@@ -291,6 +314,9 @@ __inline u32 ConvertPageMask(const u32 PageMask)
  
  void UnmapTLB(const tlbs& t, int i)
  {
@@ -46,7 +72,7 @@ index 15091881c..c04f65815 100644
  	//Console.WriteLn("Clear TLB %d: %08x-> [%08x %08x] S=%d G=%d ASID=%d Mask= %03X", i,t.VPN2,t.PFN0,t.PFN1,t.S,t.G,t.ASID,t.Mask);
  	u32 mask, addr;
  	u32 saddr, eaddr;
-@@ -392,6 +410,39 @@ void WriteTLB(int i)
+@@ -392,6 +418,39 @@ void WriteTLB(int i)
  namespace R5900 {
  namespace Interpreter {
  namespace OpcodeImpl {
@@ -86,7 +112,7 @@ index 15091881c..c04f65815 100644
  namespace COP0 {
  
  	void TLBR()
-@@ -432,12 +483,15 @@ namespace COP0 {
+@@ -432,12 +491,15 @@ namespace COP0 {
  			cpuRegs.CP0.n.Index, cpuRegs.CP0.n.PageMask, cpuRegs.CP0.n.EntryHi,
  			cpuRegs.CP0.n.EntryLo0, cpuRegs.CP0.n.EntryLo1);
  
@@ -102,7 +128,7 @@ index 15091881c..c04f65815 100644
  		const u8 j = cpuRegs.CP0.n.Random & 0x3f;
  
  		if (j > 47)
-@@ -446,41 +500,42 @@ namespace COP0 {
+@@ -446,41 +508,42 @@ namespace COP0 {
  			return;
  		}
  
@@ -167,7 +193,7 @@ index 15091881c..c04f65815 100644
  		if (cpuRegs.CP0.n.Index == 0xFFFFFFFF)
  			cpuRegs.CP0.n.Index = 0x80000000;
  	}
-@@ -494,6 +549,12 @@ namespace COP0 {
+@@ -494,6 +557,12 @@ namespace COP0 {
  		//if(bExecBIOS == FALSE && _Rd_ == 25) Console.WriteLn("MFC0 _Rd_ %x = %x", _Rd_, cpuRegs.CP0.r[_Rd_]);
  		switch (_Rd_)
  		{
@@ -180,7 +206,7 @@ index 15091881c..c04f65815 100644
  			case 12:
  				cpuRegs.GPR.r[_Rt_].SD[0] = (s32)(cpuRegs.CP0.r[_Rd_] & 0xf0c79c1f);
  				break;
-@@ -548,6 +609,37 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
+@@ -548,6 +617,37 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
  				cpuRegs.CP0.r[9] = cpuRegs.GPR.r[_Rt_].UL[0];
  				break;
  
@@ -219,7 +245,7 @@ index 15091881c..c04f65815 100644
  				WriteCP0Status(cpuRegs.GPR.r[_Rt_].UL[0]);
  				break;
 diff --git a/pcsx2/Memory.cpp b/pcsx2/Memory.cpp
-index c65f19bea..dc65f9521 100644
+index c65f19bea..32b8a5d09 100644
 --- a/pcsx2/Memory.cpp
 +++ b/pcsx2/Memory.cpp
 @@ -23,6 +23,7 @@ BIOS
@@ -230,7 +256,19 @@ index c65f19bea..dc65f9521 100644
  #include "IopHw.h"
  #include "GS/Renderers/Common/GSFunctionMap.h"
  #include "GS.h"
-@@ -1207,8 +1208,28 @@ void memReset()
+@@ -1036,6 +1037,11 @@ void memSetPageAddr(u32 vaddr, u32 paddr)
+ 
+ }
+ 
++void memSetPageAddrReadOnly(u32 vaddr)
++{
++	vtlb_VMapWriteProtected(vaddr, 0x1000);
++}
++
+ void memClearPageAddr(u32 vaddr)
+ {
+ 	//Console.WriteLn("memClearPageAddr: %8.8x", vaddr);
+@@ -1207,8 +1213,28 @@ void memReset()
  	memMapUserMem();
  	memSetKernelMode();
  
@@ -261,8 +299,20 @@ index c65f19bea..dc65f9521 100644
  
  	std::memset(s_ba, 0, sizeof(s_ba));
  
+diff --git a/pcsx2/Memory.h b/pcsx2/Memory.h
+index 63543ded7..f0d51d99c 100644
+--- a/pcsx2/Memory.h
++++ b/pcsx2/Memory.h
+@@ -163,6 +163,7 @@ namespace SysMemory
+ extern void memSetKernelMode();
+ //extern void memSetSupervisorMode();
+ extern void memSetUserMode();
++extern void memSetPageAddrReadOnly(u32 vaddr);
+ extern void memSetPageAddr(u32 vaddr, u32 paddr);
+ extern void memClearPageAddr(u32 vaddr);
+ extern void memBindConditionalHandlers();
 diff --git a/pcsx2/R5900.cpp b/pcsx2/R5900.cpp
-index d6a196bc5..dab14597b 100644
+index d6a196bc5..90d075cc6 100644
 --- a/pcsx2/R5900.cpp
 +++ b/pcsx2/R5900.cpp
 @@ -26,6 +26,7 @@
@@ -582,7 +632,20 @@ index d6a196bc5..dab14597b 100644
  	// Avoid too much spamming on the interpreter
  	if (Cpu != &intCpu || IsDebugBuild) {
  		Console.Error("cpuTlbMiss pc:%x, cycl:%x, addr: %x, status=%x, code=%x",
-@@ -361,6 +633,7 @@ static bool cpuIntsEnabled(int Interrupt)
+@@ -181,6 +453,12 @@ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
+ 	cpuException(excode, bd);
+ }
+ 
++// Store to a page whose EntryLo.D is clear. Vectors to 0x180 like any other
++// non-refill exception, which cpuException already does for this code.
++void cpuTlbModified(u32 addr, u32 bd) {
++	cpuTlbMiss(addr, bd, EXC_CODE(1));
++}
++
+ void cpuTlbMissR(u32 addr, u32 bd) {
+ 	cpuTlbMiss(addr, bd, EXC_CODE_TLBL);
+ }
+@@ -361,6 +639,7 @@ static bool cpuIntsEnabled(int Interrupt)
  __fi void _cpuEventTest_Shared()
  {
  	eeEventTestIsActive = true;
@@ -590,3 +653,149 @@ index d6a196bc5..dab14597b 100644
  	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
  	cpuRegs.lastEventCycle = cpuRegs.cycle;
  	// ---- INTC / DMAC (CPU-level Exceptions) -----------------
+diff --git a/pcsx2/R5900.h b/pcsx2/R5900.h
+index 5566cd1b6..27dcb8e27 100644
+--- a/pcsx2/R5900.h
++++ b/pcsx2/R5900.h
+@@ -398,6 +398,7 @@ extern uint dmacInterrupt();
+ 
+ extern void cpuReset();
+ extern void cpuException(u32 code, u32 bd);
++extern void cpuTlbModified(u32 addr, u32 bd);
+ extern void cpuTlbMissR(u32 addr, u32 bd);
+ extern void cpuTlbMissW(u32 addr, u32 bd);
+ extern void cpuTestHwInts();
+diff --git a/pcsx2/vtlb.cpp b/pcsx2/vtlb.cpp
+index 36e7d4747..94d924882 100644
+--- a/pcsx2/vtlb.cpp
++++ b/pcsx2/vtlb.cpp
+@@ -53,6 +53,7 @@ static vtlbHandler vtlbHandlerCount = 0;
+ 
+ static vtlbHandler DefaultPhyHandler;
+ static vtlbHandler UnmappedVirtHandler;
++static vtlbHandler WriteProtectedVirtHandler;
+ static vtlbHandler UnmappedPhyHandler;
+ 
+ struct FastmemVirtualMapping
+@@ -571,6 +572,76 @@ template <typename OperandType>
+ static void vtlbUnmappedVWriteSm(u32 addr, OperandType data) { vtlb_Miss(addr, 1); }
+ static void TAKES_R128 vtlbUnmappedVWriteLg(u32 addr, r128 data) { vtlb_Miss(addr, 1); }
+ 
++// A page the guest mapped with EntryLo.D clear is readable but must raise TLB
++// Modified on a store. The vtlb has no read-only state of its own -- a virtual
++// page is either a direct pointer, which serves reads and writes alike, or a
++// handler -- so write protection has to be a handler that serves the reads
++// itself.
++//
++// Copy-on-write is built on this exception. Without it a store to a page
++// shared by fork() lands in the shared page and parent and child quietly
++// scribble over each other.
++static __ri void vtlb_Modified(u32 addr)
++{
++	if (Cpu == &intCpu)
++	{
++		cpuTlbModified(addr, cpuRegs.branch);
++		Cpu->CancelInstruction();
++		return;
++	}
++
++	static int spamStop = 0;
++	if (spamStop++ < 50 || IsDevBuild)
++		Console.Error("TLB Modified, pc=0x%x addr=0x%x", cpuRegs.pc, addr);
++}
++
++// These pages are mapped vaddr->vaddr so the handler is given the virtual
++// address, which the exception needs; the physical side is resolved here.
++static void* vtlb_WriteProtectedSource(u32 vaddr)
++{
++	for (int i = 0; i < 48; i++)
++	{
++		const u32 pageSize = (tlb[i].Mask() + 1) << 12;
++		const u32 base = tlb[i].VPN2();
++
++		if (vaddr < base || vaddr >= base + pageSize * 2)
++			continue;
++		if (!tlb[i].isGlobal() && (tlb[i].EntryHi.ASID != (cpuRegs.CP0.n.EntryHi & 0xff)))
++			continue;
++
++		const bool odd = (vaddr - base) >= pageSize;
++		const EntryLo_t& lo = odd ? tlb[i].EntryLo1 : tlb[i].EntryLo0;
++		if (!lo.V)
++			return nullptr;
++
++		const u32 paddr = (odd ? tlb[i].PFN1() : tlb[i].PFN0()) + ((vaddr - base) & (pageSize - 1));
++		if (!eeMem || (paddr + 16) > Ps2MemSize::ExposedRam)
++			return nullptr;
++
++		return &eeMem->Main[paddr];
++	}
++	return nullptr;
++}
++
++template <typename OperandType>
++static OperandType vtlbWriteProtReadSm(u32 addr)
++{
++	OperandType value = 0;
++	if (const void* src = vtlb_WriteProtectedSource(addr))
++		std::memcpy(&value, src, sizeof(OperandType));
++	return value;
++}
++static RETURNS_R128 vtlbWriteProtReadLg(u32 addr)
++{
++	if (const void* src = vtlb_WriteProtectedSource(addr))
++		return r128_load(src);
++	return r128_zero();
++}
++
++template <typename OperandType>
++static void vtlbWriteProtWriteSm(u32 addr, OperandType data) { vtlb_Modified(addr); }
++static void TAKES_R128 vtlbWriteProtWriteLg(u32 addr, r128 data) { vtlb_Modified(addr); }
++
+ template <typename OperandType>
+ static OperandType vtlbUnmappedPReadSm(u32 addr) {
+ 	vtlb_BusError(addr, 0);
+@@ -1215,6 +1286,24 @@ void vtlb_VMapBuffer(u32 vaddr, void* buffer, u32 size)
+ 	}
+ }
+ 
++void vtlb_VMapWriteProtected(u32 vaddr, u32 size)
++{
++	verify(0 == (vaddr & VTLB_PAGE_MASK));
++	verify(0 == (size & VTLB_PAGE_MASK) && size > 0);
++
++	// Fastmem hands stores straight to host memory with no handler in the way,
++	// so a page that must trap on write cannot have a fastmem mapping.
++	vtlb_RemoveFastmemMappings(vaddr, size);
++
++	while (size > 0)
++	{
++		vtlbdata.vmap[vaddr >> VTLB_PAGE_BITS] =
++			VTLBVirtual(VTLBPhysical::fromHandler(WriteProtectedVirtHandler), vaddr, vaddr);
++		vaddr += VTLB_PAGE_SIZE;
++		size -= VTLB_PAGE_SIZE;
++	}
++}
++
+ void vtlb_VMapUnmap(u32 vaddr, u32 size)
+ {
+ 	verify(0 == (vaddr & VTLB_PAGE_MASK));
+@@ -1250,6 +1339,7 @@ void vtlb_Init()
+ 
+ 	UnmappedVirtHandler = vtlb_RegisterHandler(VTLB_BuildUnmappedHandler(vtlbUnmappedV));
+ 	UnmappedPhyHandler = vtlb_RegisterHandler(VTLB_BuildUnmappedHandler(vtlbUnmappedP));
++	WriteProtectedVirtHandler = vtlb_RegisterHandler(VTLB_BuildUnmappedHandler(vtlbWriteProt));
+ 	DefaultPhyHandler = vtlb_RegisterHandler(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+ 
+ 	//done !
+diff --git a/pcsx2/vtlb.h b/pcsx2/vtlb.h
+index 8f321703f..7fec2ff7e 100644
+--- a/pcsx2/vtlb.h
++++ b/pcsx2/vtlb.h
+@@ -70,6 +70,7 @@ extern void vtlb_DynV2P();
+ //virtual mappings
+ extern void vtlb_VMap(u32 vaddr,u32 paddr,u32 sz);
+ extern void vtlb_VMapBuffer(u32 vaddr,void* buffer,u32 sz);
++extern void vtlb_VMapWriteProtected(u32 vaddr,u32 sz);
+ extern void vtlb_VMapUnmap(u32 vaddr,u32 sz);
+ extern bool vtlb_ResolveFastmemMapping(uptr* addr);
+ extern bool vtlb_GetGuestAddress(uptr host_addr, u32* guest_addr);
