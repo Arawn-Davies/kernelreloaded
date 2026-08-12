@@ -190,9 +190,21 @@ typedef struct {
 	int	mode;
 } tge_sbcall_setdve_arg_t;
 
-/* TGE_SBCALL_PUTC */
+/* TGE_SBCALL_PUTC
+ *
+ * char, not int. PS2 Linux declares the other end of this call as
+ * "struct sb_putchar_arg { char c; }" in include/asm-mips/ps2/sbcall.h, so the
+ * caller's struct is ONE byte with alignment 1 -- romcons_console_write() puts
+ * one on the stack per character, and the compiler is free to place it at an
+ * odd address.
+ *
+ * Declaring it int here made sbcall_putc() read it with lw, which needs 4-byte
+ * alignment, and an odd arg pointer then raised an Address Error. It presents
+ * as intermittent, because whether it faults depends only on where that 1-byte
+ * local happened to land in the caller's frame.
+ */
 typedef struct {
-	int	c;
+	char	c;
 } tge_sbcall_putc_arg_t;
 
 /* TGE_SBCALL_SETGSCRT */
