@@ -532,6 +532,110 @@ s32 cdCheckSCmd(s32 cmd, const char *file, int line)
 	}
 }
 
+/* ------------------------------------------------------------------------
+ * CDVD configuration area (SBIOS calls 191-193).
+ *
+ * These were unimplemented, and that is not cosmetic: PS2 Linux's ps2sysconf
+ * driver retries SBR_CDVD_OPENCONFIG/CLOSECONFIG 100 times when they return
+ * -1, and on the BlackRhino 2.4 live kernel the boot does not recover from
+ * it. The visible symptom on a working kernel is the milder
+ * "ps2sysconf: can't open osd" line.
+ *
+ * The protocol matches ps2sdk's ee/rpc/cdvd/src/scmd.c (sceCdOpenConfig and
+ * friends) -- same RPC server (CD_SERVER_SCMD 0x80000593) and same command
+ * numbers, which were already defined above.
+ *
+ * SBR_CDVD_WRITECONFIG (194) is deliberately NOT implemented. It writes the
+ * console's configuration area, and the mapping from this struct's fields to
+ * ps2sdk's (block, mode, NumBlocks) triplet is inferred rather than
+ * documented. Getting a read wrong returns junk; getting a write wrong
+ * corrupts the console's stored settings. Reads are enough for ps2sysconf.
+ * ------------------------------------------------------------------------ */
+
+static void cdvdconfigStage2(void *rarg)
+{
+	tge_sbcall_rpc_arg_t *carg = (tge_sbcall_rpc_arg_t *) rarg;
+	tge_sbcall_cdvdconfig_arg_t *arg = carg->sbarg;
+
+	/* Both open and close return { result, status } in the first 8 bytes. */
+	arg->status = *(s32 *) UNCACHED_SEG(sCmdRecvBuff + 4);
+
+	carg->result = *(s32 *) UNCACHED_SEG(sCmdRecvBuff);
+	CDVD_UNLOCKS();
+	carg->endfunc(carg->efarg, carg->result);
+}
+
+static void cdvdreadconfigStage2(void *rarg)
+{
+	tge_sbcall_rpc_arg_t *carg = (tge_sbcall_rpc_arg_t *) rarg;
+	tge_sbcall_cdvdconfig_arg_t *arg = carg->sbarg;
+
+	/* Layout is { result, status, data[0x400] }; hand the payload back. */
+	arg->status = *(s32 *) UNCACHED_SEG(sCmdRecvBuff + 4);
+	if (arg->data != NULL) {
+		memcpy(arg->data, UNCACHED_SEG(sCmdRecvBuff + 8), 0x400);
+	}
+
+	carg->result = *(s32 *) UNCACHED_SEG(sCmdRecvBuff);
+	CDVD_UNLOCKS();
+	carg->endfunc(carg->efarg, carg->result);
+}
+
+int sbcall_cdvdopenconfig(tge_sbcall_rpc_arg_t *carg)
+{
+	tge_sbcall_cdvdconfig_arg_t *arg = carg->sbarg;
+	u32 param;
+
+	if (CD_CHECK_SCMD(CD_SCMD_OPENCFG) == 0)
+		return SCMD_EAGAIN;
+
+	/* Packing is ps2sdk's:
+	 *   ((NumBlocks & 0xFF) << 16) | (mode & 0xFF) | ((block & 0xFF) << 8)
+	 * with this struct's block/device standing in for NumBlocks/block. */
+	param = ((arg->block & 0xFF) << 16) | (arg->mode & 0xFF)
+		| ((arg->device & 0xFF) << 8);
+
+	memcpy(sCmdSendBuff, &param, 4);
+	SifWriteBackDCache(sCmdSendBuff, 4);
+
+	if (SifCallRpc(&clientSCmd, CD_SCMD_OPENCFG, SIF_RPC_M_NOWAIT,
+			sCmdSendBuff, 4, sCmdRecvBuff, 8,
+			cdvdconfigStage2, carg) < 0) {
+		CDVD_UNLOCKS();
+		return -SIF_RPCE_SENDP;
+	}
+	return 0;
+}
+
+int sbcall_cdvdcloseconfig(tge_sbcall_rpc_arg_t *carg)
+{
+	if (CD_CHECK_SCMD(CD_SCMD_CLOSECFG) == 0)
+		return SCMD_EAGAIN;
+
+	if (SifCallRpc(&clientSCmd, CD_SCMD_CLOSECFG, SIF_RPC_M_NOWAIT,
+			0, 0, sCmdRecvBuff, 8,
+			cdvdconfigStage2, carg) < 0) {
+		CDVD_UNLOCKS();
+		return -SIF_RPCE_SENDP;
+	}
+	return 0;
+}
+
+int sbcall_cdvdreadconfig(tge_sbcall_rpc_arg_t *carg)
+{
+	if (CD_CHECK_SCMD(CD_SCMD_READCFG) == 0)
+		return SCMD_EAGAIN;
+
+	/* 0x408 = 8 byte result/status header plus one 0x400 config block. */
+	if (SifCallRpc(&clientSCmd, CD_SCMD_READCFG, SIF_RPC_M_NOWAIT,
+			0, 0, sCmdRecvBuff, 0x408,
+			cdvdreadconfigStage2, carg) < 0) {
+		CDVD_UNLOCKS();
+		return -SIF_RPCE_SENDP;
+	}
+	return 0;
+}
+
 int cdSCmdInitCallback(tge_sbcall_rpc_arg_t *carg)
 {
 	carg = carg;

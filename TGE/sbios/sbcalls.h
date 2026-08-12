@@ -107,6 +107,11 @@ int sbcall_cdvdmmode(tge_sbcall_rpc_arg_t *carg);
 int sbcall_cdvdgeterror(tge_sbcall_rpc_arg_t *carg);
 int sbcall_cdvdgettype(tge_sbcall_rpc_arg_t *carg);
 int sbcall_cdvdtrayrequest(tge_sbcall_rpc_arg_t *carg);
+/* CDVD configuration area; see the comment in scmd.c. WRITECONFIG (194) is
+ * intentionally absent. */
+int sbcall_cdvdopenconfig(tge_sbcall_rpc_arg_t *carg);
+int sbcall_cdvdcloseconfig(tge_sbcall_rpc_arg_t *carg);
+int sbcall_cdvdreadconfig(tge_sbcall_rpc_arg_t *carg);
 int sbcall_cdvdread_video(tge_sbcall_rpc_arg_t *carg);
 
 /* Sound .*/
