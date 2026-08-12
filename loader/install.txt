@@ -1,0 +1,210 @@
+Kernelloader for ps2 Linux
+##########################
+
+This program can load a Linux kernel and start it. Currently Linux
+2.4.17 for PS2 is recommended. To build everything you need a Linux host
+and the PS2SDK.
+
+You can get the latest version of kernelloader with the shell commands:
+export CVSROOT=anonymous@kernelloader.cvs.sourceforge.net:/cvsroot/kernelloader
+cvs login
+cvs co -z3 kernelloader
+
+Kernelloader
+############
+To compile kernelloader you need some additional libraries on your host:
+
+- libpng
+
+You need to check that you have the development package installed (on debian suffix "-dev", on SuSe "devel")
+
+Run the following script to build the toolchain and all libraries which
+are required by kernelloader:
+
+bash ./kernelloader/buildtoolchain.sh
+
+You should run it as normal user. "sudo" needs to be configured/enabled before.
+The script will create the directory "build" in the current directory and
+will delete it before. Everything will be extracted and build in this directory.
+The directory "/usr/local/ps2dev" will be used for installation and will be
+removed before. The owner of this directory will be set to the current user.
+After running the script you may want to change this.
+The script also creates the file "PS2SDK.sh" in the current directory. You
+will need to load the configuration into the current shell with the command:
+source PS2SDK.sh
+
+Now you can go back to kernelloader for a test:
+
+cd kernelloader
+make
+
+The following test will upload the elf file using ps2link. ps2link must
+be started on the PS2. You can also use your prefered upload method. The
+elf file "kloader.elf" can also be started by AR Max Media Player. You need
+just to copy it on a USB memory stick.
+
+make test
+
+A menu will start and you can select the first menu entry by pressing the
+CROSS button on the first pad.
+You should see the output of example kernel on screen (SD TV). The kernel
+tries to emulate the original PS2 kernel and start a simple text demo. SIFRPC
+is working correctly in this kernel. All IOP hardware should work. Only
+single thread and a interrupt handler is supported.
+
+Linux 2.4
+#########
+
+The following script compiles Linux 2.4 for PS2:
+./buildlinux.sh
+
+A 32-bit x86 Linux enviroment is required for building (e.g. Ubuntu 9.10).
+If this is not available (because of 64 bit), the script tries to use
+dchroot for building (see chapter "Compiling on 64 bit Ubuntu 10.10").
+
+Linux 2.6
+#########
+
+PS2 Linux 2.6 can be build on a newer Linux distribution. Ubuntu 10.10 for
+AMD64 is recommended. The following shell commands build it:
+
+export CVSROOT=anonymous@kernelloader.cvs.sourceforge.net:/cvsroot/kernelloader
+cvs login
+cvs co -z3 linux
+cd linux
+./build-all.sh
+
+Note: The development of Linux 2.6 is not finished and may run instable
+or may have missing features. See file linux/readme.txt for more
+information.
+
+Kernelloader Test
+#################
+Go back to kernelloader dir and run make test again.
+
+make test
+
+You can copy the kernel to a web server and enter the URL in the menu
+entry "Select kernel". The DNS client in kernelloader supports TCP only.
+You may need to use the ip address instead of the domain name. Use ping
+command to get the ip address. Maximum size of kernel is ~4 MB.
+The loader sets maximum "initrd.gz" decompressed size to 16 MB (using
+"ramdisk_size=16384").
+Select boot in the main menu and the Linux kernel should start. USB
+keyboard is working. You can also load the kernel from a memory card or
+a USB memory stick. You can select the file in the menu in the kernelloader
+on the PS2 using the first pad or the "+" and "-" keys on a connected
+USB keyboard.
+
+Remarks:
+########
+
+You can select the SBIOS type "TGE" or "RTE" if you have DISC 1 from Sony's
+Linux (for PlayStation 2) Release 1.0. To start Linux this is not required.
+TGE is nearly complete and it is possible that you wnat to test with RTE.
+Then you need to put in the original PS2 Linux DVD DISC 1 and adjust the
+path in config.mk. The SBIOS will be automatically extracted. Linux will
+only start with this version when you change the configuration accordingly:
+
+When kernelloader is started you need to do the following:
+1. Uncheck "Enable TGE (disable RTE)" in "Configuration Menu".
+2. Execute "Submit above config" in "Configuration Menu".
+3. Uncheck "Use SBIOS from TGE (ow RTE)".
+4. Uncheck all CDVD entries in "Enabled SBIOS Calls" menu which is
+located in "Configuration Menu" (entries 176 to 195).
+
+USB is only working when ps2link modules are not loaded (see "Configuration Menu").
+It is also possible to select new ROM modules instead of old ones.
+
+CDVD calls should also be disabled when using TGE, because of some Linux
+kernel exceptions.
+
+Files with prefix "host:" a first searched in a kloader.elf embedded
+files system.
+
+Compiling on 64 bit Ubuntu 10.10:
+#################################
+
+The PS2SDK is working on 64 bit. The compiler from PS2SDK is also working,
+but the old GCC 2.95.2 for Linux is not working. The compiler produces the
+following code in vmlinux:
+
+0000000080010490 <kernel_entry>:
+    80010490:   3c1c8001        lui     $gp,0x8001
+    80010494:   279c6000        addiu   $gp,$gp,24576
+    80010498:   27881fe0        addiu   $t0,$gp,8160
+    8001049c:   251dfff0        addiu   $sp,$t0,-16
+    800104a0:   ac288048        sw      $t0,-32696($at)
+    800104a4:   ac28a6d0        sw      $t0,-22832($at)
+
+The opcode at address 800104a0 is wrong. The compiler binary was build
+for 32 bit x86. The GCC seems to be incompatible with the 32 bit libraries
+of Ubuntu 10.10. The same error is at many places in vmlinux. The result
+is that the vmlinux will crash at 800104a0. This one of the first
+instructions. This looks like kernelloader is hanging at starting kernel.
+Currently the only way to compile it, is using a 32 bit system (PS2 or x86).
+
+The correct code would be (compiled on 32 bit x86):
+
+0000000080010490 <kernel_entry>:
+    80010490:   3c1c8001        lui     $gp,0x8001
+    80010494:   279c6000        addiu   $gp,$gp,24576
+    80010498:   27881fe0        addiu   $t0,$gp,8160
+    8001049c:   251dfff0        addiu   $sp,$t0,-16
+    800104a0:   3c018048        lui     $at,0x8048
+    800104a4:   ac28a6d0        sw      $t0,-22832($at)
+
+To avoid the problem you need a 32 bit Linux distribution. You can
+use dchroot and debootstrap to run it in your existing Linux
+installation.
+I used karmic, Ubuntu 9.10, 32 bit and installed it as follows:
+sudo apt-get install schroot dchroot
+wget http://archive.ubuntu.com/ubuntu/pool/main/d/debootstrap/debootstrap_1.0.23ubuntu1~karmic1_all.deb
+sudo dpkg --install debootstrap_1.0.23ubuntu1~karmic1_all.deb
+Add the following to /etc/schroot/schroot.conf:
+[karmic]
+description=Karmic (karmic32)
+directory=/chroot
+priority=3
+groups=$USER,root
+root-groups=root
+aliases=default,stable,ia32
+personality=linux32
+
+Note: You need to replace $USER by your user name.
+
+sudo debootstrap --variant=buildd --arch i386 karmic /chroot/ http://old-releases.ubuntu.com/ubuntu/
+Add the following to /etc/fstab
+/home           /chroot/home            none bind 0 0
+/tmp            /chroot/tmp             none bind 0 0
+/dev            /chroot/dev             none bind 0 0
+tmpfs           /chroot/dev/shm         tmpfs defaults 0 0
+proc            /chroot/proc            proc    defaults        0       0
+
+sudo mount /chroot/home
+sudo mount /chroot/tmp
+sudo mount /chroot/dev
+sudo mount /chroot/dev/shm
+sudo mount /chroot/proc
+
+sudo dchroot -d
+apt-get update
+apt-get --no-install-recommends install wget debconf devscripts gnupg nano
+apt-get update
+apt-get install locales
+locale-gen de_DE.UTF-8
+apt-get install sudo
+apt-get install kbd
+exit
+
+sudo cp /etc/timezone /chroot/etc/timezone
+sudo cp /etc/localtime /chroot/etc/localtime
+sudo cp /etc/passwd /chroot/etc/passwd
+sudo cp /etc/shadow /chroot/etc/shadow
+sudo cp -a /etc/sudoers /chroot/etc/sudoers
+sudo cp /etc/hosts /chroot/etc/hosts
+sudo cp /etc/group /chroot/etc/group
+
+./buildlinux.sh
+
+See https://wiki.ubuntu.com/DebootstrapChroot for more information.
