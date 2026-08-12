@@ -1,0 +1,126 @@
+/*
+# _____     ___ ____     ___ ____
+#  ____|   |    ____|   |        | |____|
+# |     ___|   |____ ___|    ____| |    \    PS2DEV Open Source Project.
+#-----------------------------------------------------------------------
+# Copyright 2001-2004, ps2dev - http://www.ps2dev.org
+# Licenced under Academic Free License version 2.0
+# Review ps2sdk README & LICENSE files for further details.
+#
+# $Id$
+# Linkfile script for ee-ld
+*/
+
+/* Modern ps2sdk's crt0 defines the entry point as "__start" (two underscores);
+ * it used to be "_start". Left as _start, the symbol never resolves, so ld
+ * warns "cannot find entry symbol _start; defaulting to 01000000" AND -- the
+ * part that actually matters -- crt0.o gets garbage-collected out of the link
+ * entirely, because an unresolved ENTRY leaves nothing rooting it. The result
+ * still links and still produces a plausible-looking ELF whose entry address
+ * lands on whatever code happens to sit first in .text, with no stack, heap or
+ * .bss setup. Verified: with _start there is no __start symbol in the output;
+ * with __start, crt0 is retained and the ELF entry points at it. */
+ENTRY(__start);
+
+PHDRS
+{
+	text PT_LOAD FLAGS(5);
+	data PT_LOAD FLAGS(6);
+}
+
+SECTIONS {
+	/* Load into high 16 MB, lower 16MB reserved for extracting kernel and initrd. */
+	.text 0x1000000: {
+		_ftext = . ;
+		*(.text)
+		*(.text.*)
+		*(.gnu.linkonce.t*)
+		KEEP(*(.init))
+		KEEP(*(.fini))
+		QUAD(0)
+	} : text
+
+	PROVIDE(_etext = .);
+	PROVIDE(etext = .);
+
+	.crc32 ALIGN(16): {
+		*(.crc32)
+	} : text
+
+	/* Global/static constructors and deconstructors. */
+	.ctors ALIGN(16): {
+		KEEP(*crtbegin*.o(.ctors))
+		KEEP(*(EXCLUDE_FILE(*crtend*.o) .ctors))
+		KEEP(*(SORT(.ctors.*)))
+		KEEP(*(.ctors))
+	} : text
+	.dtors ALIGN(16): {
+		KEEP(*crtbegin*.o(.dtors))
+		KEEP(*(EXCLUDE_FILE(*crtend*.o) .dtors))
+		KEEP(*(SORT(.dtors.*)))
+		KEEP(*(.dtors))
+	} : text
+
+	/* Static data.  */
+	.rodata ALIGN(128): {
+		_frodata = . ;
+		*(.rom)
+		*(.rodata)
+		*(.rodata.*)
+		*(.gnu.linkonce.r*)
+	} : text
+	PROVIDE(_erodata = .);
+
+	.data ALIGN(128): {
+		_fdata = . ;
+		*(.data)
+		*(.data.*)
+		*(.gnu.linkonce.d*)
+		SORT(CONSTRUCTORS)
+	} : data
+
+	.jcr ALIGN(16): { *(.jcr) } : data
+	.rdata ALIGN(128): { *(.rdata) } : data
+	.gcc_except_table ALIGN(128): { *(.gcc_except_table) } : data
+
+	_gp = ALIGN(128) + 0x7ff0;
+	.lit4 ALIGN(128): { *(.lit4) } : data
+	.lit8 ALIGN(128): { *(.lit8) } : data
+
+	.sdata ALIGN(128): {
+		*(.sdata)
+		*(.sdata.*)
+		*(.gnu.linkonce.s*)
+	} : data
+
+	_edata = .;
+	PROVIDE(edata = .);
+
+	/* Uninitialized data.  */
+	.sbss ALIGN(128) : {
+		_fbss = . ;
+		*(.sbss)
+		*(.sbss.*)
+		*(.gnu.linkonce.sb*)
+		*(.scommon)
+	} : data
+
+	.bss ALIGN(128) : {
+		*(.bss)
+		*(.bss.*)
+		*(.gnu.linkonce.b*)
+		*(COMMON)
+	} : data
+	_end_bss = .;
+
+	.reginfo : { *(.reginfo) }
+
+	. = ALIGN(32);
+	_end = . ;
+	PROVIDE(end = .);
+
+	/* Symbols needed by crt0.s.  */
+	PROVIDE(_heap_size = -1);
+	PROVIDE(_stack = -1);
+	PROVIDE(_stack_size = 128 * 1024);
+}

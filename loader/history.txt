@@ -1,0 +1,336 @@
+3.0
+- Verify read only part of kloader.elf with CRC32.
+- Put ELF files into read only segment.
+- Support SIO debug output in kernelloader
+- Several fixes.
+- Fix compile warnings.
+- Fix SifIopReset.
+- Fix, don't overwrite memory in read only segment.
+- Fix loading of kernel and SBIOS in some situations.
+- Kernelloader can now be used from ps2client/ps2link.
+- Fixed bug, fioRemove() creates an empty directory.
+- Removed modules which makes no sense.
+- Copy bootinfo in the last second to final destination,
+  so that now memory is overwritten before.
+- Improved handling of CDVD when no disc is inserted.
+- Added support for easy loading configurations files from USB
+- Improve NetSurf support.
+- Improved menu.
+- Improved support for showing console type in /proc.
+- Improved --no-cdvd parameter.
+- Add parameter --fix-no-disc, fix Linux start when no disc is inserted.
+- Easier menu with most important features directly accessible.
+  The old menu can be reached via "Advanced Menu".
+- Fixed handling of old PS1 controllers inside kernelloader menu
+  SCPH-1180 and SCPH-1080 were not detected. The menu was partly frozen.
+
+2.7
+- Fix DVD-R support on Hong Kong consoles.
+- Fix hda3 selection (hda2 was selected).
+- Use sharedmem.irx debug output if module was loaded
+  and disable callback debug output in SBIOS. This is for
+  debugging with ps2link.
+
+2.6
+- Fixed auto detection of video parameters on NTSC consoles.
+  This error was introduced by version 2.5.
+- Fixed detection of DVD region. Version 2.5 was only working
+  on european slim PSTwo or fat PS2 (all regions).
+- Add entry in Versions menu for changing path to EROMDRV.
+  The modules need to be reloaded in the menu Configuration->
+  Net Options.
+- Live DVD has been successfully tested with SCPH-70012 (v12).
+- Added commandline parameter "--no-cdvd" to disable CD/DVD
+  access. This can be used with ps2link, e.g.:
+  ps2client -h 192.168.0.23 execee host:kloader2.6.elf -d --no-cdvd
+
+2.5
+- Fixed CDVD problems in Linux 2.2. This allows to install
+  Sony's Linux Toolkit with kernelloader.
+- Automatically create save game icon when saving configuration
+  file in mc0:kloader/ or mc1:kloader/. Linux mascot created by
+  Larry Ewing.
+- Fixed bug in SBIOS when pointer is not aligned in RPC call.
+  This error normally never happens.
+- Devided kernel parameters into video parameters and other
+  kernel parameters in menu.
+- Support video parameters for framebuffer driver of Linux2.6
+- Fix detecting of console region on v12/v13 SCPH-7000x. This
+  should fix DVD video support on these consoles. This is
+  needed to get the Live DVD working.
+  UPDATE: The detection is worse. The problem is fixed in 2.6.
+- Added mode setting by function keys:
+  F1: Auto detect
+  F2: VGA 640x480 60Hz
+  F3: VGA 640x480 72Hz
+  F4: VGA 640x480 75Hz
+  F5: VGA 640x480 85Hz
+  F6: DTV 480P
+  F7: NTSC
+  F8: PAL
+- Disabled switching of screen mode with keys "+" and "-" in
+  input fields, because the keys can be used as kernel parameters
+  and switching can confuse the user.
+- The screen was scrolling away in loader when there was no game pad
+  connected to port 0. Fixed detecting of game pads.
+- Add parameter "-d" for kernelloader. This enables loading of
+  ps2link for debugging purpose.
+- Show blinking cursor in input fields. Add possibilty to navigate
+  the cursor with the cursor keys.
+- Set scroll position to 0 when input field is opened.
+- Changed screenshot button to R3.
+- Added virtual keyboard. The key is selected with R1 and L1.
+  The triangle button inserts the key. Left and right moves the
+  cursor left and right. The square button deletes a character
+  and the circle button is for fast jumping in key selection.
+  The start button jumps to the beginning and the select button
+  to the end of the string.
+- Fixed screen drawing problem in VGA mode (flickering penguin when
+  loading data with http).
+
+2.4
+- Add support for 64 bit kernels.
+- Add support for Linux 2.6 initial RAM disk parameters (initrd).
+- Fix alignment in SIF command interrupt handler. This could
+  randomly freeze drivers. Which could freeze the whole
+  system. Kernelloader should now support more kernels like
+  the NetBSD kernel.
+
+2.3
+- Fix crash when bad configuration file is loaded.
+- Fix for power button. System will shutdown when power button
+  is pressed.
+
+2.2
+- Screen position can be changed with the left analog stick
+  within kernelloader. Don't expect any effect in Linux. In
+  Linux you need to use the new setcrtmode from CVS.
+- Fixed pink screen problem with component signal (YPbPr)
+- Fixed problems with VGA signal.
+- Added better BSD Support (still not fully working).
+- Reworked code (mainly debug code, sharedmem.irx).
+- Buttons L2 and R2 select the screen mode within
+  kernelloader (VESA, 480P, NTSC or PAL). 480P may
+  have problems on the right side of the screen, I can't
+  test this.
+- The keys "+" and "-" on a connected USB keyboard switch the
+  screen mode. On the US layout the keys are left to the
+  delete key (sign < X |). For "+" you need to press the SHIFT
+  key at the same time. If you don't have an US keyboard, the
+  keys may have differnt signs on it.
+  For details see http://en.wikipedia.org/wiki/Keyboard_layout
+- Add auto detection of sound modules from rom1.
+- Add menu for showing versions of PS2 ROM, rom1:LIBSD, hardware
+  and kernelloader.
+- Don't show error if HDD adapter is not connected.
+- Added unionfs-1.0.14 to kernel patches. This is required to
+  get a full featured live DVD (write support).
+
+2.1
+- Disable DVD access if loading of eromdrvloader.irx failed.
+- Added DNS client which supports TCP connections only.
+- Added support for downloading files from internet (HTTP).
+  Instead of a file name a URL can be specified (for example:
+  http://www.server.com/filename). The DNS server need to be
+  configured in the net options menu.
+- Added patch for libsd which enables USB support when using
+  sound modules from RTE with newer slim PSTwo (v15). This patch
+  may not be required, because it is solved by enabling USB
+  from EE instead of IOP side. So the patch is by default disabled.
+- Read DVD region from NVM. This should work at least with
+  SCPH-77004. eromdrvloader.irx error should be fixed (I can't
+  test this).
+- Moved USB initialisation from EE to IOP CPU. This makes USB more
+  stable on slim PSTwo.
+- Fixed bug in SBIOS code for MC. The bug caused system to hang
+  if the XMCMAN and XMCSERV modules are used or on heavy USB usage
+  on slim PSTwo.
+- Fixed bug in SBIOS code for PAD. The bug caused system to hang
+  suddenly (mostly at startup) if XPADMAN is used.
+- By default the new modules are used on slim PSTwo. This makes USB
+  more stable. Sometimes there are wrong data written to USB memory
+  devices on slim PSTwo.
+- Add ability to reload modules in kernelloader (to activate a changed
+  network configuration).
+- Add SBIOS call for reading burned DVD video discs. This allows to
+  run live Linux DVDs. A patched Linux kernel is required to use the
+  new SBIOS call (vmlinux_fat_and_slim_v4.gz).
+- Fixed detection of wrong console type at startup if no configuration
+  was loaded from memory card.
+
+2.0
+- Updated to PS2SDK SVN Revision 1601.
+- Updated to gsKit SVN Revision 1588.
+- Fixed PAL/NTSC detection on slim PSTwo.
+- Fixed ethernet on slim PSTwo (smaprpc.irx + Linux patch).
+- Initialize fat PS2 dev9 from IOP side (ethernet + hdd, dev9init.irx).
+- Easier menu
+- Added menu entry "Restore defaults" in "File Menu". This will restore all defaults except the kernel and initrd path.
+- Detect slim PSTwo or fat PS2 automatically if no configuration was loaded or if "Restore defaults" is selected.
+- I don't know if auto detection is working for fat PS2 V11 (SCPH-5000?). I have a SCPH-50004 with ROM version 0190, but I am not sure if it is V10 or V11. I choosed ROM version 0190 as last fat PS2 version.
+- There should be less problems with USB sticks in kernelloader.
+
+1.9
+- Support interrupts on slim PSTwo. So USB is working.
+- Support automatic boot (without key or button press).
+- Stop sound engine when kernelloade starts.
+- Add possibilty to extract RTE modules and SBIOS to memory card.
+- RTE modules and SBIOS can now be loaded from memory card.
+- USB module can be replaced by one on memory card.
+- Automatic boot feature (time out)
+- Added audsrv.irx sound module.
+- Added free versions of padman, sio2man and libsd.
+- Fixed Video DVD support on slim PSTwo (rom1:EROMDRV? detection)
+
+1.8
+- Support video DVDs in kernelloader, for reading Linux kernel and initrd.
+- Support for compressed kernels to save space on PS2 memory card.
+- Verify ELF file integrity before starting the kernel. Broken files caused
+  by failed downloads will be detected.
+- Fixed bug when trying to load small kernels and initrd. Print error message
+  when this happens. Initrd must be deactivated when using the example
+  kernel included in kloader.elf.
+- Add possibilty to select different config files.
+- Automatically load cdfs:config.txt if found.
+
+1.7
+- Enabled screenshot feature. Screenshot in kernelloader can be done by
+  pressing button "R1". Screenshot is saved on USB memory stick.
+- Allow only one RPC call at the same time. This fixed CDVD bug.
+- Allow to set graphic mode. Implementation of function setdve is still missing.
+- Fixed memory hole when SifSetDma() is currently not possible in
+  SifCallRpc() and SifbindRpc().
+- Cleanup return codes when SBIOS call need to be retried later.
+
+1.6
+- Initrd is now supported even if kernel is not patched.
+- Initrd is now in protected memory area and can't get overwritten.
+- Clean up pad.c.
+- Code cleanup.
+- IOP heap bug fix.
+- Remove compiler warnings.
+- Add power off support.
+- Add mutex for some functions, to be sure that functions are called correctly.
+- Better initialisation of CDVD.
+- Fixed too short assembler loops.
+- Added SBIOS_DEBUG in config.mk for debugging SBIOS.
+- Removed redundant SIF DMA and SIF RPC structures.
+- Fixed lost instructions when debug is off (printf-if-combination).
+
+1.5
+- Enabled hard disc interrupts. Hard disc access is fast.
+- Changed default configuration: Enable hard disc and network
+  Disable IOP debug output.
+
+1.4
+- Added menu entry for reboot to enter PS2 browser.
+- Fixed auto detect of PCIC type for SCPH-10350.
+- Add possibilty to enter PCIC type in kernelloader menu:
+	0: No card
+	1: PCMCIA
+	2: PCMCIA
+	3: SCPH-10350 with PHY 83847A and MAC CXD9731GP.
+	Empty: Auto detect
+
+1.3
+- Emulated ps2 kernel can now be loaded by Sony PS2 linux.
+- Get hard disc runnning, but without interrupts. Access is very slow.
+
+1.2
+- Fixed out of VRAM in NTSC mode.
+- Added code for making screenshots. Code is unstable, so I deactivated it.
+
+1.1
+- Better graphical look and style of boot screen.
+- Fixed error when switching mc directories to often.
+- Autodetect memory card module version in SBIOS.
+- Fixed problem that debug output was lost in eedebug.irx.
+- Needed to move load address of kernelloader from 5 MB to ~4 MB,
+  because kernel has problems with initrd loaded at a high address.
+  Maximum kernel size is ~4 MB.
+- Check ELF files for correct section location before startin. Can be
+  deactivated in menu ("Enable IOP debug output").
+- Print debug output on screen when kernelloader is started.
+- Added USB keyboard support in kernelloader, you can select menu
+  by using CURSOR KEYS and RETURN.
+- Kernel parameter can be changed with USB keyboard.
+
+1.0
+- Added support for CDVD (Playstation CD and Playstation DVD can be read).
+- Finished dmarelay.irx, I am unsure about the correctness of function
+  read_thread() in the ATA part.
+- Code for hard disc and network can be activated if ps2link is deactivated by
+  configuration.
+- Ethernet frames can be send, but not received.
+- Hard disc is not yet working.
+- Fixed bug in interrupt handling of SIF RPC.
+- Add configuration switch for new and old ROM modules, CDVD is not working with
+  new modules.
+- Fixed cache aliasing problem in sifdma.c (sif1_dmatags).
+- Added RPC printf debug support (using fileio.c).
+- Print module initialisation messages from IOP on EE GS screen.
+- Added menu system to kernelloader.
+
+0.9
+- Support for PAD.
+
+0.8
+- Support memory card in linux.
+- Support USB in linux also when ps2link is loaded.
+
+0.7
+- SIFRPC is working with linux (but code is incomplete).
+- iopheap RPC is working with linux (complete).
+- Fixed interrupt handling.
+- USB is working with linux when ps2link and the network modules are
+  deactivated.
+- Default configuration is a working USB linux.
+
+0.6
+- Get SIFRPC working in emulated ps2 kernel.
+- Added support for negative syscalls (syscalls with first letter "i", which can
+  be safely called in interrupt routines).
+- Added support for semaphores in single thread environment including
+  interrupts.
+- Configured "Hello World!" as default example for emulated ps2 kernel.
+
+0.5
+- Added graphic support in loader using gsKit.
+- Added configure option in config.mk for selecting SBIOS type RTE or TGE.
+- Added script that can extract the sbios.bin from PS2 Linux DVD 1.
+- Implemented some functions of the sifcmd level.
+- Extended my example kernel to emulate real PS2 kernel.
+- Simple examples using graphic are working with emulated PS2 kernel.
+- Use PS2 tutorial demo as example.
+- Use "hello world" demo as second example.
+- Changed DOS line endings to linux line endings.
+- Fixed setup of stack in example kernel.
+- Flush TLBs in example kernel.
+- Map memory in example kernel like real PS2.
+- Rewritten cache flush and invalidate functions.
+- Handle some PS2 syscalls in example kernel.
+- Added map files for analysing SBIOS, RTE PS2 linux loader and PS2 kernel.
+- Added some syscall to emulated PS2 kernel.
+- Added handling of INTC and DMAC to emulated PS2 kernel.
+- Added timer interrupt handling to emulated PS2 kernel.
+
+0.4
+- Use gsKit for graphic output.
+- Use normal malloc() instead of mempool.
+
+0.3
+- Use higher load address (maximum kernel size is now 5 MB).
+- Set mempool automatically to the end of the elf file.
+- Disable RPC DMA channel before starting linux.
+- Fix problem in exception handler that leads to random bus errors and page faults (at 0x80000204 must be a "nop" instruction).
+- Setup some cp0 registers, just to be sure.
+
+0.2
+- Removed graphic support in loader.
+- Added support to use iop printf over shared memory.
+- Output is redireceted via ps2link.
+- Modules loaded from host and iop is reset before starting kernel.
+- Exception handler is installed by loader to handle errors while booting.
+
+0.1
+- First release, patch required for linux to handle exception at startup.

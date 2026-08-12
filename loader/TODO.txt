@@ -1,0 +1,39 @@
+Linux patch: first 2 instructions of exception handler need to be nop and after
+patched jump must be also a nop.
+
+Error in ps2sdk: In function sbcall_cdvdgettoc() the return value of cdCheckNCmd() is not correctly checked.
+
+EXT2/EXT3 file system support in kernelloader for USB and harddisc.
+
+FTP support in kernelloader.
+
+Boot from burned DVD video (installer).
+
+Linux installer program.
+
+Audio support in Linux.
+
+DNS support for UDP instead of TCP.
+
+Describe menu entries, especially what "TGE for new modules mean" -> only for XPADMAN. Other stuff is
+autodetected except XCDVDMAN which may only cause shutdown to fail and other unimportant stuff.
+
+Fix heavy load USB problems on slim.
+
+Fix heavy load Network (Samba) problems on slim.
+
+Add support for reset. Reset is somewhere defined in Syscall 0 and 1.
+
+Warum geht vmlinux_v4 nicht ab kernelloader 2.4 mit initrd ohne Festplatte.
+
+Driver for /proc/ps2sysvers.
+
+Write ps2_bootinfo->boot_time and other fields.
+
+NFS UDP ssems not to work with Linux 2.6. NFS-Root, out of memory, SLAB (slabtop)
+
+Memory leak with NFS/TCP in Linux 2.6.
+
+hard disc support inclusive irx.
+
+Linux kernel hangs in CDVD init whith new SifiopReset.
