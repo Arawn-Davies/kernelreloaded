@@ -52,7 +52,6 @@ EE_CFLAGS += -Wno-pointer-sign
 # that gcc 15 newly detects, not something this port introduced, and fixing it
 # needs the correct MCSERV command byte. Demoted to a warning (not silenced) so
 # it stays visible until someone can resolve it.
-EE_CFLAGS += -Wno-error=array-bounds
 # The SBIOS type-puns through pointer casts all over (hardware registers,
 # SIF packets, sound regs), which violates strict aliasing. At -O2 gcc both
 # warns and is entitled to optimise on the assumption. Disabling the assumption

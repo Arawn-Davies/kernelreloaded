@@ -1052,7 +1052,7 @@ int sbcall_mcgetentspace(tge_sbcall_rpc_arg_t *carg)
 	mcCmd.name[1023] = 0;
 	
 	// call sif function
-	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_FUNC_GET_ENT], 1, &mcCmd, 0x414, rdata, 4, mcCallback, carg)) != 0) {
+	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_RPCCMD_GET_ENT], 1, &mcCmd, 0x414, rdata, 4, mcCallback, carg)) != 0) {
 		lastCmd = 0;
 		return -SIF_RPCE_SENDP;
 	}
@@ -1100,7 +1100,7 @@ int sbcall_mcrename(tge_sbcall_rpc_arg_t *carg)
 	FlushCache(0);
 	
 	// call sif function
-	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_FUNC_SET_INFO], 1, &mcCmd, 0x414, rdata, 4, mcCallback, carg)) != 0) {
+	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_RPCCMD_SET_INFO], 1, &mcCmd, 0x414, rdata, 4, mcCallback, carg)) != 0) {
 		lastCmd = 0;
 		return -SIF_RPCE_SENDP;
 	}
@@ -1137,7 +1137,7 @@ int mcChangeThreadPriority(int level)
 	*(u32*)mcCmd.name = level;
 	
 	// call sif function
-	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_FUNC_CHG_PRITY], 1, &mcCmd, 48, rdata, 4, 0, 0)) != 0) {
+	if((ret = SifCallRpc(&cdata, mcRpcCmd[mcType][MC_RPCCMD_CHG_PRITY], 1, &mcCmd, 48, rdata, 4, 0, 0)) != 0) {
 		lastCmd = 0;
 		return -SIF_RPCE_SENDP;
 	}
