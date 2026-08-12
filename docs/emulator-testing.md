@@ -108,6 +108,41 @@ When it is on, the log states the root explicitly, which is worth checking:
 HLE Host: Set 'host:' root path to: /path/to/kltest
 ```
 
+### Linux NEEDS the interpreter, and fails silently without it
+
+`vtlb_Miss()` delivers a TLB miss to the guest **only** on the interpreter
+path:
+
+```c
+if (Cpu == &intCpu) {
+    cpuTlbMissW/R(addr, cpuRegs.branch);   // raise it properly
+    Cpu->CancelInstruction();
+    return;
+}
+// recompiler: print "TLB Miss, pc=... addr=..." and carry on
+```
+
+With `EnableEE = true` the exception is never raised, so demand paging stops
+working and the boot dies in ways that look like fresh MMU bugs. The only
+symptom is a run of `TLB Miss, pc=0x… addr=0x… [store]` lines, and they stop
+the moment the recompiler is switched off.
+
+This bites because a game test wants the recompiler and Linux wants the
+interpreter, so the setting gets flipped and left. If TLB misses reappear
+"out of nowhere", check this first.
+
+### A config on a memory card silently outranks host:
+
+The search order is `mc0:`, `mc1:`, `mass0:`, `cdfs:`, `host:` — so a
+`kloader/config.txt` on an enabled memory card wins over the one being edited
+next to the ELF, with no message saying so. The loader can write that file
+itself when configuration is saved, so it appears without anyone creating it
+deliberately.
+
+It shows up as the loader ignoring every edit and then failing on a path
+nobody configured, e.g. `cannot open file mc0:vmlinux.gz`. Disabling both card
+slots removes the ambiguity, and nothing in emulator testing needs a card.
+
 ### The EE recompiler crashes; use the interpreter
 
 With the default recompiler, PCSX2 dies about two seconds after `Jump to
