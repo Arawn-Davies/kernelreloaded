@@ -87,6 +87,13 @@ SifRpcClientData_t clientSCmd __attribute__ ((aligned(64)));	// for s-cmds
 
 /** Receive buffer requires only 48, use 64 because of cache aliasing problems.*/
 u8 sCmdRecvBuff[64] __attribute__ ((aligned(64)));
+
+/* READCONFIG returns { result, status, data[0x400] } = 0x408 bytes, far more
+ * than the 64-byte sCmdRecvBuff every other S-command uses. Using the shared
+ * buffer for it overruns by 968 bytes into whatever follows in the SBIOS's
+ * fixed 0xEFE0 region, which silently wedges the kernel the moment the reply
+ * DMA lands. It needs its own buffer. */
+u8 sCmdCfgRecvBuff[0x408] __attribute__ ((aligned(64)));
 /** Receive buffer requires only 48, use 64 because of cache aliasing problems.*/
 u8 sCmdSendBuff[64] __attribute__ ((aligned(64)));
 
@@ -571,12 +578,12 @@ static void cdvdreadconfigStage2(void *rarg)
 	tge_sbcall_cdvdconfig_arg_t *arg = carg->sbarg;
 
 	/* Layout is { result, status, data[0x400] }; hand the payload back. */
-	arg->status = *(s32 *) UNCACHED_SEG(sCmdRecvBuff + 4);
+	arg->status = *(s32 *) UNCACHED_SEG(sCmdCfgRecvBuff + 4);
 	if (arg->data != NULL) {
-		memcpy(arg->data, UNCACHED_SEG(sCmdRecvBuff + 8), 0x400);
+		memcpy(arg->data, UNCACHED_SEG(sCmdCfgRecvBuff + 8), 0x400);
 	}
 
-	carg->result = *(s32 *) UNCACHED_SEG(sCmdRecvBuff);
+	carg->result = *(s32 *) UNCACHED_SEG(sCmdCfgRecvBuff);
 	CDVD_UNLOCKS();
 	carg->endfunc(carg->efarg, carg->result);
 }
@@ -628,7 +635,7 @@ int sbcall_cdvdreadconfig(tge_sbcall_rpc_arg_t *carg)
 
 	/* 0x408 = 8 byte result/status header plus one 0x400 config block. */
 	if (SifCallRpc(&clientSCmd, CD_SCMD_READCFG, SIF_RPC_M_NOWAIT,
-			0, 0, sCmdRecvBuff, 0x408,
+			0, 0, sCmdCfgRecvBuff, sizeof(sCmdCfgRecvBuff),
 			cdvdreadconfigStage2, carg) < 0) {
 		CDVD_UNLOCKS();
 		return -SIF_RPCE_SENDP;
