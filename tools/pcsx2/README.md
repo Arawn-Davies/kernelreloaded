@@ -23,6 +23,7 @@ part of it was broken, each fault hidden behind the previous one.
 | 2 | No TLB Invalid exception | `TLBL`/`TLBS` always vectored to the refill handler at `0x000`. An entry that is present but has `V=0` must vector to `0x180` instead. |
 | 3 | `TLBP` read `EntryHi` through an inverted bitfield union | `VPN2` was taken from the ASID end and `ASID` from the VPN2 end, then compared against a byte address. A probe of a live entry reported "not found". |
 | 4 | `MapTLB`/`UnmapTLB` ignored the ASID | The vtlb is one flat space, so every process's mappings went in together and the last writer won — one process read another's pages. |
+| 6 | Address Error was detected but never raised | `RaiseAddressError()` printed a message and called `CancelInstruction()`, with a TODO admitting it "doesn't actually get raised in the CPU yet". The exception codes had always existed and nothing used them. |
 | 5 | Writes to a `D=0` page raised nothing | `MapTLB` mapped every page read-write regardless of `EntryLo.D`, and the vtlb has no read-only state, so **TLB Modified was an exception PCSX2 could never raise**. Copy-on-write depends on it entirely. |
 
 Numbers 2 and 5 are the same fault in two places: the vtlb records a page as
@@ -59,6 +60,27 @@ process's page — faulting 76,356 times in a single sample, after the boot had
 otherwise reached userspace. `tlbInstalledASID` tracks what is actually
 installed instead, and only ever moves through a full 48-entry rebuild, so
 whatever is in the vtlb is always exactly one address space.
+
+## Address Error
+
+MIPS traps an unaligned load or store as `AdEL`/`AdES`, and Linux **emulates
+the access** in `do_ade()` -- that is how unaligned access works at all.
+Swallowing the fault means the access silently never happens, the destination
+register keeps whatever it held, and the instruction is re-executed forever
+because nothing advanced past it. Observed as the same line repeating without
+end:
+
+```
+Address Error, addr=0x81febc91 [load] pc=0x800012dc
+```
+
+Games never take address errors, so nobody noticed. Delivering it properly
+(`BadVAddr`, back `pc` up so `EPC` points at the faulting instruction, then
+`cpuException`) let the boot continue straight past to `VFS: Mounted root` and
+`INIT: version 2.78 booting`.
+
+The `pc` in that message is worth keeping: it is what identified the faulting
+code as TGE's own SBIOS rather than anything in the kernel.
 
 ## Write protection
 

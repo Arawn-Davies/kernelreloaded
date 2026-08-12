@@ -324,7 +324,7 @@ index 63543ded7..f0d51d99c 100644
  extern void memClearPageAddr(u32 vaddr);
  extern void memBindConditionalHandlers();
 diff --git a/pcsx2/R5900.cpp b/pcsx2/R5900.cpp
-index d6a196bc5..90d075cc6 100644
+index d6a196bc5..524b53ef9 100644
 --- a/pcsx2/R5900.cpp
 +++ b/pcsx2/R5900.cpp
 @@ -26,6 +26,7 @@
@@ -405,7 +405,7 @@ index d6a196bc5..90d075cc6 100644
  		else if ((code & 0x7C) == 0x0)
  			offset = 0x200; //Interrupt
  		else
-@@ -164,8 +206,238 @@ __ri void cpuException(u32 code, u32 bd)
+@@ -164,8 +206,239 @@ __ri void cpuException(u32 code, u32 bd)
  	cpuUpdateOperationMode();
  }
  
@@ -427,6 +427,7 @@ index d6a196bc5..90d075cc6 100644
 +static u32 eeTlbMissLast = 0;
 +static u32 eeTlbMissPrev = 0;
 +static u32 eeLastDump = 0;
++
 +
 +// Bounded because the failure runs at ~10M faults a second: enough events to
 +// replay the sequence by hand, then silence.
@@ -542,7 +543,7 @@ index d6a196bc5..90d075cc6 100644
 +	// cpuRegs.cycle is declared u64 but wraps at 32 bits in practice, so a
 +	// "next due" absolute deadline past 2^32 is never reached and the dump
 +	// stops for good. Compare a 32-bit delta instead, which wraps with it.
-+	static const u32 interval = 300 * 1000 * 1000;
++	static const u32 interval = 1500 * 1000 * 1000;
 +
 +	if (static_cast<u32>(static_cast<u32>(cpuRegs.cycle) - eeLastDump) < interval)
 +		return;
@@ -644,7 +645,7 @@ index d6a196bc5..90d075cc6 100644
  	// Avoid too much spamming on the interpreter
  	if (Cpu != &intCpu || IsDebugBuild) {
  		Console.Error("cpuTlbMiss pc:%x, cycl:%x, addr: %x, status=%x, code=%x",
-@@ -181,6 +453,12 @@ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
+@@ -181,6 +454,12 @@ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
  	cpuException(excode, bd);
  }
  
@@ -657,7 +658,7 @@ index d6a196bc5..90d075cc6 100644
  void cpuTlbMissR(u32 addr, u32 bd) {
  	cpuTlbMiss(addr, bd, EXC_CODE_TLBL);
  }
-@@ -361,6 +639,7 @@ static bool cpuIntsEnabled(int Interrupt)
+@@ -361,6 +640,7 @@ static bool cpuIntsEnabled(int Interrupt)
  __fi void _cpuEventTest_Shared()
  {
  	eeEventTestIsActive = true;
@@ -677,6 +678,43 @@ index 5566cd1b6..27dcb8e27 100644
  extern void cpuTlbMissR(u32 addr, u32 bd);
  extern void cpuTlbMissW(u32 addr, u32 bd);
  extern void cpuTestHwInts();
+diff --git a/pcsx2/R5900OpcodeImpl.cpp b/pcsx2/R5900OpcodeImpl.cpp
+index fecebece9..5d9b241cc 100644
+--- a/pcsx2/R5900OpcodeImpl.cpp
++++ b/pcsx2/R5900OpcodeImpl.cpp
+@@ -509,10 +509,29 @@ void DSRLV(){ if (!_Rd_) return; cpuRegs.GPR.r[_Rd_].UD[0] = (u64)(cpuRegs.GPR.r
+ 
+ __noinline static void RaiseAddressError(u32 addr, bool store)
+ {
+-	const std::string message(fmt::format("Address Error, addr=0x{:x} [{}]", addr, store ? "store" : "load"));
++	// Actually deliver it. The exception codes have always been defined
++	// (EXC_CODE_AdEL / EXC_CODE_AdES); nothing ever raised them.
++	//
++	// Games do not care, because they do not take address errors. Linux does:
++	// MIPS traps AdEL/AdES and EMULATES the access in do_ade(), which is how
++	// unaligned loads and stores work at all. Swallowing the fault means the
++	// access silently never happens, the destination register keeps whatever
++	// it held before, and the guest runs on with corruption -- which is how a
++	// dynamically linked binary as string-heavy as bash dies while simpler
++	// ones survive.
++	//
++	// EPC has to point at the faulting instruction, so back pc up first, the
++	// same way cpuTlbMiss() does.
++	static int spamStop = 0;
++	if (spamStop++ < 50 || IsDevBuild)
++	{
++		Console.Error(fmt::format("Address Error, addr=0x{:x} [{}] pc=0x{:x}",
++			addr, store ? "store" : "load", cpuRegs.pc));
++	}
+ 
+-	// TODO: This doesn't actually get raised in the CPU yet.
+-	Console.Error(message);
++	cpuRegs.CP0.n.BadVAddr = addr;
++	cpuRegs.pc -= 4;
++	cpuException(store ? EXC_CODE_AdES : EXC_CODE_AdEL, cpuRegs.branch);
+ 
+ 	Cpu->CancelInstruction();
+ }
 diff --git a/pcsx2/vtlb.cpp b/pcsx2/vtlb.cpp
 index 36e7d4747..94d924882 100644
 --- a/pcsx2/vtlb.cpp

@@ -73,7 +73,12 @@ int main(int argc, char **argv)
 	int emulatedKey;
 	register int sp asm("sp");
 
-	crc32check("Please download kloader.elf again.");
+	/* The .crc32 section is patched by crc32gen at build time, so a mismatch
+	 * means the ELF changed after that ran -- a damaged copy on the card, or
+	 * a hand-edited binary. "Download it again" is only useful advice to
+	 * someone running a release. */
+	crc32check("Copy kloader.elf to the card again, or rebuild it if you "
+		"modified the ELF after crc32gen ran.");
 	sio_printf("Stack 0x%08x\n", sp);
 
 	debug_mode = -1;
