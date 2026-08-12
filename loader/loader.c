@@ -2090,6 +2090,13 @@ static int real_loader(void)
 
 	strcpy(bootpage.commandline, getKernelParameter());
 
+	/* Log the command line exactly as the kernel will receive it. Without this
+	 * there is no way to tell whether a parameter (init=, root=, console=)
+	 * actually survived from config.txt to the kernel -- the loader never
+	 * echoed it, so a typo, a truncation or a silently ignored option all look
+	 * identical from the outside. */
+	kprintf("Kernel command line: \"%s\"\n", bootpage.commandline);
+
 	bootpage.bootinfo.size = sizeof(bootpage.bootinfo);
 	if (IsT10K()) {
 		bootpage.bootinfo.mach_type = PS2_BOOTINFO_MACHTYPE_T10K;
@@ -2215,6 +2222,10 @@ static int real_loader(void)
 					/* Linux 2.6 has parameters for initrd. */
 					snprintf(bootpage.commandline, sizeof(bootpage.commandline), "%s rd_start=0x%08x rd_size=0x%08x",
 						getKernelParameter(), initrd_start, initrd_size);
+
+					/* This path replaces the command line built above, so log
+					 * the final version including the appended initrd bounds. */
+					kprintf("Kernel command line: \"%s\"\n", bootpage.commandline);
 				} else {
 					error_printf("Loading of initrd failed (1).");
 					free(buffer);
