@@ -34,8 +34,8 @@ build against a current toolchain. This repository provides:
 
 - a **Docker build environment** that compiles it with today's ps2dev image
   (gcc 15, modern ps2sdk, gsKit)
-- **patches** carrying the fixes that requires, kept out of the submodule so
-  upstream stays clean — see [`patches/README.md`](patches/README.md)
+- the **kernelloader source** itself, at the top level, carrying the fixes
+  that requires — see [`docs/porting-notes.md`](docs/porting-notes.md)
 - room for the original goal: a refreshed configurator UI
 
 ## The problem that motivated it
@@ -85,12 +85,19 @@ toolchain work was for — and it now does.
 | [`docs/kernelloader-internals.md`](docs/kernelloader-internals.md) | Boot chain, SBIOS vs kernel stub vs vmlinux, the config system in full (search order, all keys, device prefixes, the `CONFIG_DIR2` trap), build components, the SBIOS memory budget, `config.mk` switches |
 | [`docs/build-environment.md`](docs/build-environment.md) | Every Dockerfile layer and why it exists; how ps2sdk's `Rules.make` behaves out-of-tree; the `IOP_INCS` / `IOP_WARNFLAGS` / `PS2SDKSRC` hooks; `build.sh` usage; the stale-object trap |
 | [`docs/porting-notes.md`](docs/porting-notes.md) | Every build failure in order, with the actual error and root cause — including the two real bugs gcc 15 uncovered |
-| [`patches/README.md`](patches/README.md) | Summary of the 50 patched files, grouped by cause |
 
 ## Which kernelloader?
 
-The submodule tracks **[citronalco/kernelloader](https://github.com/citronalco/kernelloader)**,
+This tree started as **[citronalco/kernelloader](https://github.com/citronalco/kernelloader)**,
 not rickgaiser's.
+
+It was a git submodule until August 2026. That is gone: upstream has been dead
+since 2017 and nothing here can be pushed to it, so the pointer only ever
+referenced commits that existed on one machine — a clone got an empty directory
+and GitHub's submodule link 404'd. The source is now tracked directly, and the
+modern-toolchain patch that used to be applied at build time is simply part of
+it. That patch's final form survives in history at `708c8ff` if you want to see
+the delta against pristine upstream in one piece.
 
 Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
 issues, not archived — just abandoned. Of its seven forks, only citronalco's has
@@ -111,11 +118,25 @@ booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 Requires Docker. Nothing else — the toolchain lives in the image.
 
 ```bash
-git submodule update --init --recursive
+git clone https://github.com/Arawn-Davies/kernelreloaded.git
+cd kernelreloaded
 ./build.sh
 ```
 
-Output lands in `bin/` (gitignored), the same path on WSL2, Linux or Cygwin.
+Output lands in `bin/` (gitignored), the same path on WSL2, Linux or Cygwin:
+
+| File | What it is |
+|---|---|
+| `bin/kloader.elf` | **the deliverable** — copy this to `mc0:`, `mc1:` or `mass0:` |
+| `bin/debug/loader.elf` | the same program, uncompressed, with symbols |
+| `bin/debug/kernel.elf` | EE kernel stub, already embedded in the above |
+
+`kloader.elf` and `loader.elf` are **not two programs**. `loader/Makefile` links
+`loader.elf`, `crc32gen` patches the `.text`/`.rodata` checksums into its
+`.crc32` section, and `ps2-packer` compresses the result into a self-extracting
+`kloader.elf` — 6.5 MB becomes about 985 KB. Only `kloader.elf` boots on a
+console; its entry point is the packer's decompression stub, and it carries no
+symbols. Keep `loader.elf` for `nm`/`addr2line` when something faults.
 
 ```
 ./build.sh              # build
@@ -125,8 +146,15 @@ Output lands in `bin/` (gitignored), the same path on WSL2, Linux or Cygwin.
 REBUILD_IMAGE=1 ./build.sh   # force the toolchain image to rebuild
 ```
 
-`build.sh` applies `patches/*.patch` to the submodule first, skipping any
-already applied.
+`build.sh` copies the shipped textures from `assets/` into `loader/`, then
+builds. Generated artifacts stay out of git via `.gitignore`; to prove nothing
+needed is being ignored, clean the source directories and rebuild (naming them
+explicitly, so `dist/` survives):
+
+```bash
+git clean -Xdf kernel TGE loader modules sharedmem smaprpc \
+               dev9init crc32gen png2rgb ppm2rgb hello RTE && ./build.sh
+```
 
 ## What the environment provides
 
@@ -229,7 +257,7 @@ for — but the original TGE
 ([ps2homebrew/TGE](https://github.com/ps2homebrew/TGE), 2004) declares that
 array with **no alignment attribute at all**, so 16 is still stricter than the
 design it shipped with. Flagged in-code and in
-[`patches/README.md`](patches/README.md).
+[`docs/porting-notes.md`](docs/porting-notes.md).
 
 ## Roadmap
 

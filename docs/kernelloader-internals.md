@@ -372,7 +372,7 @@ endif
 
 It selects a **generic Linux MIPS cross-compiler**, not "a newer ps2dev". The
 ps2dev image does not contain `mips64el-linux-gnu-*`, so this project uses the
-`ee-` branch. Some fixes in `patches/0001` simply bring that branch in line with
+`ee-` branch. Some of the port's fixes simply bring that branch in line with
 flags the `yes` branch already had (`-fno-builtin`, `-march=r5900`) — the author
 had clearly hit the same issues from the other direction.
 
