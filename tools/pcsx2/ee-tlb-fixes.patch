@@ -679,7 +679,7 @@ index 5566cd1b6..27dcb8e27 100644
  extern void cpuTlbMissW(u32 addr, u32 bd);
  extern void cpuTestHwInts();
 diff --git a/pcsx2/R5900OpcodeImpl.cpp b/pcsx2/R5900OpcodeImpl.cpp
-index fecebece9..5d9b241cc 100644
+index fecebece9..50648f757 100644
 --- a/pcsx2/R5900OpcodeImpl.cpp
 +++ b/pcsx2/R5900OpcodeImpl.cpp
 @@ -509,10 +509,29 @@ void DSRLV(){ if (!_Rd_) return; cpuRegs.GPR.r[_Rd_].UD[0] = (u64)(cpuRegs.GPR.r
@@ -715,6 +715,28 @@ index fecebece9..5d9b241cc 100644
  
  	Cpu->CancelInstruction();
  }
+@@ -1046,8 +1065,20 @@ void SYSCALL()
+ 				u32 size = cpuRegs.GPR.n.a1.UL[0];
+ 				u32 offset = cpuRegs.GPR.n.a2.UL[0];
+ 
++				// Rate-limited: PS2 Linux's ps2sysconf reads this on every boot
++				// and floods the log, which buries everything else. The caveat
++				// is worth stating once, not hundreds of times. Same idiom as
++				// vtlb_Miss().
+ 				if (offset + size > 2)
+-					Console.Warning("Warning: GetOsdConfigParam2 Reading extended language/version configs, may be incorrect!");
++				{
++					static int spamStop = 0;
++					if (spamStop++ < 3)
++					{
++						Console.Warning("Warning: GetOsdConfigParam2 Reading extended "
++							"language/version configs, may be incorrect!%s",
++							spamStop == 3 ? " (further instances suppressed)" : "");
++					}
++				}
+ 
+ 				for (u32 i = 0; i < size; i++)
+ 				{
 diff --git a/pcsx2/vtlb.cpp b/pcsx2/vtlb.cpp
 index 36e7d4747..94d924882 100644
 --- a/pcsx2/vtlb.cpp
