@@ -70,6 +70,14 @@ if [ ! -d "$KSRC" ]; then
         echo "  applied $p"
     done
 
+    # Ours, not upstream's -- hence phase1/patches rather than patches/.
+    # Without this the ROM console tty is write-only and every shell started
+    # on it reads EOF and exits on the spot. See the patch header.
+    for p in romcons-input; do
+        patch -p1 -s <"$REPO/phase1/patches/$p.patch"
+        echo "  applied $p (ours)"
+    done
+
     # Three drivers live in this repo rather than the tarball.
     #
     # ps2fs and unionfs are needed even though nothing selects them: fs/Makefile
