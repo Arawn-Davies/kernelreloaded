@@ -85,6 +85,7 @@ toolchain work was for — and it now does.
 | [`docs/kernelloader-internals.md`](docs/kernelloader-internals.md) | Boot chain, SBIOS vs kernel stub vs vmlinux, the config system in full (search order, all keys, device prefixes, the `CONFIG_DIR2` trap), build components, the SBIOS memory budget, `config.mk` switches |
 | [`docs/build-environment.md`](docs/build-environment.md) | Every Dockerfile layer and why it exists; how ps2sdk's `Rules.make` behaves out-of-tree; the `IOP_INCS` / `IOP_WARNFLAGS` / `PS2SDKSRC` hooks; `build.sh` usage; the stale-object trap |
 | [`docs/porting-notes.md`](docs/porting-notes.md) | Every build failure in order, with the actual error and root cause — including the two real bugs gcc 15 uncovered |
+| [`docs/emulator-testing.md`](docs/emulator-testing.md) | Booting under PCSX2: staging a `host:` boot, the EE recompiler crash and the interpreter workaround, the `COP0_TLBWR` log flood, the `-gameargs` CRC trap, and the unimplemented SBIOS calls 191–194 |
 
 ## Which kernelloader?
 
