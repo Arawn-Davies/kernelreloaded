@@ -128,3 +128,10 @@ loader/panel.png
 loader/penguin.png
 loader/starfield.png
 loader/title.png
+
+# Kernel and initrd dropped in for boot testing. These are BlackRhino release
+# binaries, not ours to redistribute, and the pair in use changes per test.
+# Matched case-insensitively because /mnt/c is, and VMLINUX.GZ has silently
+# replaced vmlinux.gz here before.
+[Vv][Mm][Ll][Ii][Nn][Uu][Xx]*.gz
+[Ii][Nn][Ii][Tt][Rr][Dd]*.gz
