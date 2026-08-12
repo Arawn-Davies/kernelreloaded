@@ -44,6 +44,22 @@ a segmentation violation once init forked → copy-on-write faulting properly
 (86 TLB Modified exceptions, at ASID 1, 2 and 3 in succession, on consecutive
 pages, with `pc` in `ld.so`) and the kernel idle with 44/48 entries mapped.
 
+## Which address space the vtlb holds
+
+The vtlb can only ever hold one address space, so something has to decide which
+one. Reading the ASID out of `EntryHi` at the moment of each map or unmap looks
+right and is not: `EntryHi` is not a statement of the running process. `TLBR`
+loads it from an entry, and Linux's flush loops put the ASID of whichever `mm`
+they are flushing into it while they probe. Filter on it directly and the vtlb
+ends up holding a mixture of address spaces with no record of which pages came
+from where.
+
+That showed up as a store to address `0x3` — a pointer read out of the wrong
+process's page — faulting 76,356 times in a single sample, after the boot had
+otherwise reached userspace. `tlbInstalledASID` tracks what is actually
+installed instead, and only ever moves through a full 48-entry rebuild, so
+whatever is in the vtlb is always exactly one address space.
+
 ## Write protection
 
 `vtlb_VMapWriteProtected()` installs a handler for the page rather than a
