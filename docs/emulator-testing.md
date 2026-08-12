@@ -126,6 +126,25 @@ about **1%**, and the Qt log window stops responding, which reads as a hang in
 the guest but is not one. Disable `EnableLogWindow`, and disable the file/system
 console sinks when you do not need them.
 
+### "Copying files and start..." is not a hang
+
+The loader's on-screen status freezes on this message and never updates again.
+It looks exactly like a lock-up. It is not — it is the last frame the loader
+ever paints. The line immediately before it in the log explains why:
+
+```
+Flush TLBs (printf will not work after this).
+TLBs flushed.
+Jump to kernel!
+```
+
+`loader.c:2349` prints that status and then disables interrupts, enters kernel
+mode, flushes the caches and calls `jump2kernelspace()`. From that point the
+loader cannot draw, so whatever was on screen stays there until Linux brings up
+its own framebuffer console. If Linux never appears, suspect the emulator's
+renderer, not the loader — check the log for `Jump to kernel!` first, which
+proves the handoff succeeded.
+
 ### Do not pass `-gameargs`
 
 `-gameargs` makes PCSX2 inject argv via `eeloadHook2`, and that write trips
@@ -188,6 +207,64 @@ demonstrably finished.
 | `ps2sysconf: can't open osd` | see the SBIOS gap below |
 
 ---
+
+## Building a patched PCSX2 to silence the interpreter
+
+The `COP0_TLBWR` flood above cannot be configured away, because
+`pcsx2/COP0.cpp` logs it with `DevCon.Warning` rather than the trace-log
+system:
+
+```cpp
+void TLBWR() {
+    ...
+    DevCon.Warning("COP0_TLBWR %d:%x,%x,%x,%x\n", ...);   // always on
+```
+
+Note `TLBWI` directly above uses the trace-gated `COP0_LOG` instead — the
+inconsistency is upstream's, and it is why only `TLBWR` floods.
+
+Commenting out that one call (all three lines of it — the statement wraps, and
+commenting only the first leaves an unmatched paren that will not compile) is
+the entire fix:
+
+| | Stock 2.6.3 | Patched |
+|---|---|---|
+| `COP0_TLBWR` lines in one boot | 8,026,426 | 0 |
+| Logfile size | 623 MB | 45 KB |
+| Reaches `Jump to kernel!` | yes | yes |
+
+PCSX2 does not use system Qt — `build-dependencies-qt.sh` compiles Qt, FFmpeg,
+SDL3, shaderc, KDDockWidgets and more into `$HOME/deps`, which is the bulk of
+the build. Producing an AppImage via `appimage-qt.sh` makes the result portable
+to a different machine, provided it is built on the same distro release as the
+one that will run it.
+
+### Running the AppImage under WSLg
+
+WSLg's GL stack routes through Zink/d3d12 and can fail to initialise:
+
+```
+MESA: error: ZINK: failed to choose pdev
+libEGL warning: egl: failed to create dri2 screen
+```
+
+When that happens the window keeps displaying a stale frame while emulation
+continues underneath — which reads as a hang, especially combined with the
+frozen "Copying files and start..." status. Force software GL:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+MESA_LOADER_DRIVER_OVERRIDE=llvmpipe ./pcsx2-qt.AppImage -- kloader.elf
+```
+
+There is no real cost: with the EE interpreter the emulator is CPU-bound at
+roughly 1% regardless of renderer.
+
+### Input
+
+A physical controller needs `usbipd-win` to attach the USB device into WSL,
+which is rarely worth it. PCSX2's default keyboard bindings are enough to drive
+the loader menu: **arrow keys** to move, **K** for Cross, Return for Start.
 
 ## A real gap: SBIOS calls 191–194
 
