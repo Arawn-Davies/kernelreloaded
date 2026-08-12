@@ -32,6 +32,30 @@ static long sys(long n, long a, long b, long c)
 	return a3 ? -v0 : v0;
 }
 
+/* o32 passes the first four arguments in a0..a3 and the rest on the stack, so
+ * a five-argument call needs its own frame with arg 5 at 16($sp). */
+static long sys5(long n, long a, long b, long c, long d, long e)
+{
+	register long v0 __asm__("$2") = n;
+	register long a0 __asm__("$4") = a;
+	register long a1 __asm__("$5") = b;
+	register long a2 __asm__("$6") = c;
+	register long a3 __asm__("$7") = d;
+	register long t0 __asm__("$8") = e;
+
+	__asm__ __volatile__(
+		"addiu\t$sp,$sp,-32\n\t"
+		"sw\t$8,16($sp)\n\t"
+		"syscall\n\t"
+		"addiu\t$sp,$sp,32"
+		: "+r"(v0), "+r"(a3)
+		: "r"(a0), "r"(a1), "r"(a2), "r"(t0)
+		: "memory", "$1", "$3", "$9", "$10", "$11", "$12",
+		  "$13", "$14", "$15", "$24", "$25");
+
+	return a3 ? -v0 : v0;
+}
+
 #define sys_read(fd, buf, n)    sys(4003, (long)(fd), (long)(buf), (long)(n))
 #define sys_write(fd, buf, n)   sys(4004, (long)(fd), (long)(buf), (long)(n))
 #define sys_exit(code)          sys(4001, (long)(code), 0, 0)
@@ -40,7 +64,45 @@ static long sys(long n, long a, long b, long c)
 #define sys_wait4(pid, st)      sys(4114, (long)(pid), (long)(st), 0)
 #define sys_chdir(p)            sys(4012, (long)(p), 0, 0)
 #define sys_open(p, fl)         sys(4005, (long)(p), (long)(fl), 0)
+#define sys_close(fd)           sys(4006, (long)(fd), 0, 0)
+#define sys_socket(d, t, p)     sys(4183, (long)(d), (long)(t), (long)(p))
+#define sys_connect(fd, a, l)   sys(4170, (long)(fd), (long)(a), (long)(l))
+
+/* reboot(magic1, magic2, cmd, arg) -- four arguments, so it goes through the
+ * five-argument helper with a harmless extra zero. */
+#define LINUX_REBOOT_MAGIC1     0xfee1dead
+#define LINUX_REBOOT_MAGIC2     672274793
+#define LINUX_REBOOT_CMD_RESTART   0x01234567
+#define LINUX_REBOOT_CMD_HALT      0xcdef0123
+#define LINUX_REBOOT_CMD_POWER_OFF 0x4321fedc
+#define sys_reboot(cmd) \
+	sys5(4088, (long)LINUX_REBOOT_MAGIC1, (long)LINUX_REBOOT_MAGIC2, \
+	     (long)(cmd), 0, 0)
 #define sys_nanosleep(ts, r)    sys(4166, (long)(ts), (long)(r), 0)
+/* mount takes five arguments; the fifth goes on the stack, and this helper
+ * only passes three. Flags and data are both 0 here, so a4/a5 land as zero
+ * often enough to be a coin toss -- pass them explicitly instead. */
+#define sys_mount(src, tgt, fs, fl, dt) \
+	sys5(4021, (long)(src), (long)(tgt), (long)(fs), (long)(fl), (long)(dt))
+#define sys_dup2(o, n)          sys(4063, (long)(o), (long)(n), 0)
+#define sys_setsid()            sys(4066, 0, 0, 0)
+#define sys_ioctl(fd, rq, a)    sys(4054, (long)(fd), (long)(rq), (long)(a))
+
+/* MIPS ioctl numbers are not the x86 ones: 0x540e is TCSETS here, and
+ * TIOCSCTTY is 0x5480. Getting that wrong is silent -- the call just returns
+ * EFAULT and no controlling terminal is ever assigned. */
+#define TCGETS                  0x540d
+#define TCSETS                  0x540e
+#define TIOCSCTTY               0x5480
+
+/* asm-mips/termbits.h: c_iflag, c_oflag, c_cflag, c_lflag are the first four
+ * words, so c_lflag sits at offset 12 whatever NCCS happens to be. */
+#define TERMIOS_LFLAG           3
+#define T_ISIG                  0000001
+#define T_ICANON                0000002
+#define T_ECHO                  0000010
+#define T_ECHOE                 0000020
+#define T_ECHOK                 0000040
 
 /* Everything goes through these so the shell can move itself onto whichever
  * device actually has a working input side. */
@@ -117,27 +179,20 @@ static int split(char *line, char **argv, int max)
 	return n;
 }
 
-void __start(void)
+static void shell(void)
 {
 	static char line[512];
 	static char *argv[32];
-	static char *envp[] = { "PATH=/bin:/sbin:/usr/bin", 0 };
-
-	/* Prefer romcons's own tty over /dev/console. console=romcons does not
-	 * reliably make romcons the preferred console, and the GS console has no
-	 * input side at all -- the kernel installs a dummy keyboard driver -- so
-	 * reads there return EOF forever. /dev/ttyS0 is TTY_MAJOR minor 64, which
-	 * is romcons, and its input comes from the SIO RX FIFO that the PCSX2 log
-	 * window's input box writes into. */
-	{
-		long fd = sys_open("/dev/ttyS0", 2 /* O_RDWR */);
-		if (fd >= 0) {
-			in_fd = out_fd = (int)fd;
-			puts_("\nminish: using /dev/ttyS0 (romcons/SIO)\n");
-		}
-	}
-
-	puts_("minish: no libc, PS2 Linux\n");
+	/* bash wants more than PATH: without TERM it probes, and without HOME
+	 * it complains on every startup file it cannot find. */
+	static char *envp[] = {
+		"PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+		"HOME=/",
+		"TERM=linux",
+		"SHELL=/bin/bash",
+		"PS1=ps2$ ",
+		0
+	};
 
 	for (;;) {
 		long n, pid, status;
@@ -184,8 +239,25 @@ void __start(void)
 		if (argc == 0)
 			continue;
 
-		if (streq(argv[0], "exit"))
-			sys_exit(0);
+		/* Exiting is pointless here -- this shell is all there is, and
+		 * leaving just abandons the console -- so treat it as a request
+		 * to shut the machine down, which is what it means on a PS2. */
+		if (streq(argv[0], "exit") || streq(argv[0], "poweroff") ||
+		    streq(argv[0], "halt")) {
+			puts_("minish: powering off\n");
+			sys_reboot(LINUX_REBOOT_CMD_POWER_OFF);
+			/* Older setups can only halt; take that over hanging. */
+			sys_reboot(LINUX_REBOOT_CMD_HALT);
+			puts_("minish: poweroff refused, staying up\n");
+			continue;
+		}
+
+		if (streq(argv[0], "reboot")) {
+			puts_("minish: rebooting\n");
+			sys_reboot(LINUX_REBOOT_CMD_RESTART);
+			puts_("minish: reboot refused, staying up\n");
+			continue;
+		}
 
 		if (streq(argv[0], "cd")) {
 			if (argc > 1 && sys_chdir(argv[1]) < 0)
@@ -196,6 +268,17 @@ void __start(void)
 		pid = sys_fork();
 		if (pid == 0) {
 			long err;
+
+			/* Hand the child the tty we know reads, on the three
+			 * descriptors it will look for. Without this a child
+			 * inherits whatever init was given for /dev/console,
+			 * and bash in particular reads fd 0, sees EOF and
+			 * exits without a word. */
+			if (in_fd != 0) {
+				sys_dup2(in_fd, 0);
+				sys_dup2(in_fd, 1);
+				sys_dup2(in_fd, 2);
+			}
 
 			/* No PATH search in execve, so do it here: a bare "ls"
 			 * would otherwise always fail, which looks exactly like
@@ -226,4 +309,227 @@ void __start(void)
 		}
 		sys_wait4(pid, &status);
 	}
+}
+
+/* Move this process onto dev and make it the controlling terminal, so that a
+ * child shell gets a real session rather than inheriting init's. */
+static int take_tty(const char *dev)
+{
+	long fd = sys_open(dev, 2 /* O_RDWR */);
+
+	if (fd < 0)
+		return 0;
+
+	in_fd = out_fd = (int)fd;
+	sys_setsid();
+	sys_ioctl((int)fd, TIOCSCTTY, 0);
+
+	/* Ask for line-at-a-time with echo rather than trusting whatever the
+	 * driver came up with. Without ICANON a read returns as soon as any
+	 * character is available, so a typed word arrives in fragments and
+	 * each fragment is treated as a command of its own. */
+	{
+		static long t[16];
+
+		if (sys_ioctl((int)fd, TCGETS, (long)t) >= 0) {
+			t[TERMIOS_LFLAG] |= T_ISIG | T_ICANON | T_ECHO |
+					    T_ECHOE | T_ECHOK;
+			sys_ioctl((int)fd, TCSETS, (long)t);
+		}
+	}
+
+	sys_dup2((int)fd, 0);
+	sys_dup2((int)fd, 1);
+	sys_dup2((int)fd, 2);
+	return 1;
+}
+
+/* bash dies on a store to address 0x00000003, and the last thing it does
+ * before that is socket(AF_UNIX, SOCK_DGRAM, 0) -- glibc's nscd client, reached
+ * from the getpwuid() every shell does at startup. Reproduce that pair on its
+ * own, in a child so a fault cannot take init down with it, so the failure can
+ * be studied without 944KB of bash on top of it.
+ */
+static void socket_probe(void)
+{
+	long pid, status = 0;
+
+	pid = sys_fork();
+	if (pid < 0)
+		return;
+
+	if (pid == 0) {
+		static char buf[256];
+		long fd, r;
+		int i, off;
+
+		fd = sys_socket(1 /* AF_UNIX */, 2 /* SOCK_STREAM on MIPS */, 0);
+		puts_("probe: socket(AF_UNIX, 2, 0) = ");
+		putn(fd);
+		puts_("\n");
+		if (fd < 0)
+			sys_exit(0);
+
+		/* glibc copies the sockaddr into an unaligned stack slot with
+		 * swl/swr and hands connect() that odd address. An aligned
+		 * buffer is not the same test, so walk the alignments. */
+		for (off = 0; off < 4; off++) {
+			char *addr = &buf[off];
+
+			for (i = 0; i < 120; i++)
+				addr[i] = 0;
+			addr[0] = 1;    /* sun_family, little endian */
+			copy2(&addr[2], "/var/run/nscd/socket", "", 108);
+
+			puts_("probe: connect at align+");
+			putn(off);
+			puts_(" = ");
+			r = sys_connect((int)fd, addr, 110);
+			putn(r);
+			puts_("\n");
+		}
+		sys_exit(0);
+	}
+
+	sys_wait4(pid, &status);
+	if (status & 0x7f) {
+		puts_("probe: killed by signal ");
+		putn(status & 0x7f);
+		puts_(" -- reproduced without bash\n");
+	}
+}
+
+/* Hand the console to bash, and take it back if bash will not stay.
+ *
+ * The point of minish was always to prove the primitives, not to be the shell.
+ * bash is right there in the initrd; run it, and only fall back to the builtin
+ * loop if it dies -- reporting how, since a shell that exits on the spot is
+ * exactly the failure that hid the missing tty receive path for so long.
+ */
+static void run_bash(void)
+{
+	static char *av[] = { "-bash", "-i", 0 };
+	static char *ev[] = {
+		"PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+		"HOME=/",
+		"TERM=linux",
+		"SHELL=/bin/bash",
+		"PS1=ps2:\\w\\$ ",
+		0
+	};
+	long pid, status = 0;
+
+	pid = sys_fork();
+	if (pid < 0)
+		return;
+
+	if (pid == 0) {
+		sys_execve("/bin/bash", av, ev);
+		sys_execve("/bin/sh", av, ev);
+		sys_exit(127);
+	}
+
+	/* Dump the child's mappings while it still has some. When bash dies on
+	 * a fault the kernel reports only a bare address; without the library
+	 * load addresses there is no way to turn an epc into a function. */
+	{
+		static char path[64];
+		static char buf[4096];
+		static char last[4096];
+		static long last_len;
+		struct { long sec, nsec; } ts;
+		long fd, n;
+		int i, tries;
+
+		{
+			char num[12];
+			long v = pid;
+
+			i = sizeof(num);
+			num[--i] = 0;
+			do {
+				num[--i] = '0' + (int)(v % 10);
+				v /= 10;
+			} while (v);
+			copy2(path, "/proc/", &num[i], sizeof(path));
+			copy2(path, path, "/maps", sizeof(path));
+		}
+
+		/* Poll instead of sleeping once and hoping: bash dies about two
+		 * tenths of a second in, and a zombie has no mappings left to
+		 * read. Keep the most recent non-empty snapshot. */
+		for (tries = 0; tries < 40; tries++) {
+			fd = sys_open(path, 0 /* O_RDONLY */);
+			if (fd >= 0) {
+				n = sys_read((int)fd, buf, sizeof(buf) - 1);
+				sys_close((int)fd);
+				if (n > last_len) {
+					for (i = 0; i < n; i++)
+						last[i] = buf[i];
+					last_len = n;
+				}
+			}
+			ts.sec = 0;
+			ts.nsec = 10000000;   /* 10 ms */
+			sys_nanosleep(&ts, 0);
+		}
+
+		if (last_len > 0) {
+			puts_("\nminish: maps for bash\n");
+			sys_write(out_fd, last, last_len);
+		}
+	}
+
+	sys_wait4(pid, &status);
+
+	puts_("\nminish: bash exited, status ");
+	putn((status >> 8) & 0xff);
+	if (status & 0x7f) {
+		puts_(", signal ");
+		putn(status & 0x7f);
+	}
+	puts_(" -- falling back to the builtin shell\n");
+}
+
+void __start(void)
+{
+	long pid;
+
+	/* Nothing else is going to: there is no /etc/fstab processing and no
+	 * init scripts here, and w, ps, df and free all fail without it. */
+	sys_mount("proc", "/proc", "proc", 0, 0);
+
+	/* Two consoles, two shells.
+	 *
+	 * /dev/ttyS0 is romcons -- TTY_MAJOR minor 64 -- whose input arrives
+	 * through SB_GETCHAR from the SIO RX FIFO that the PCSX2 log window's
+	 * input box writes into. Handy under an emulator, absent on real
+	 * hardware unless something is wired to the SIO port.
+	 *
+	 * /dev/tty1 is the GS framebuffer console, driven by a USB keyboard
+	 * through the input layer and keybdev. That is the one that works on a
+	 * real PS2 with a monitor and a keyboard plugged in.
+	 *
+	 * Neither is guaranteed to exist, so run whichever opens.
+	 */
+	pid = sys_fork();
+	if (pid == 0) {
+		if (!take_tty("/dev/tty1"))
+			sys_exit(1);
+		puts_("\nminish: GS console on /dev/tty1, USB keyboard\n");
+		run_bash();
+		shell();
+		sys_exit(0);
+	}
+
+	if (!take_tty("/dev/ttyS0"))
+		puts_("minish: no /dev/ttyS0, falling back to inherited fds\n");
+	else
+		puts_("\nminish: using /dev/ttyS0 (romcons/SIO)\n");
+
+	puts_("minish: no libc, PS2 Linux\n");
+	socket_probe();
+	run_bash();
+	shell();
+	sys_exit(0);
 }
