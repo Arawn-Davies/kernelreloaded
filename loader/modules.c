@@ -748,6 +748,21 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
 		graphic_setStatusMessage(NULL);
 	}
 
+	/* Last resort: the configuration embedded in this ELF as a ROM file.
+	 *
+	 * Every real source above -- mc0:, mc1:, host:, mass0: and cdfs: -- has
+	 * failed by this point, so a card, stick or disc config always takes
+	 * precedence and this changes nothing for a normal setup. It matters for a
+	 * console with no config at all, and for emulators, where there may be no
+	 * writable device the guest can see. See loader/defaultconfig.txt. */
+	if (lrv != 0) {
+		lrv = loadConfigurationFromRom(ROM_CONFIG_FILE);
+		if (lrv == 0) {
+			kprintf("Loaded built-in configuration \"%s\".\n", ROM_CONFIG_FILE);
+			changeMode();
+		}
+	}
+
 	snprintf(hardware_information, sizeof(hardware_information),
 		"%s with DVD-R %s, %s sound support and %s network adapter",
 		isSlimPSTwo() ? "slim PSTwo" : "fat PS2",

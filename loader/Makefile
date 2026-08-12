@@ -126,6 +126,7 @@ MODULES = \
 	ps2kbd.irx
 
 ROM_FILES += $(MODULES) \
+	defaultconfig.txt \
 	SMSUTILS.irx \
 	SMSCDVD.irx \
 	eromdrvloader.irx \
@@ -268,6 +269,15 @@ rominitialize.h: $(RGB_FILES)
 	rm -f $@.tmp
 	rm -f $@
 	bin2s $^ $@.tmp $(subst -,_,$(subst /,_,$*))_bmp
+	sed -e "s/\.data/.section .rom/g" <$@.tmp >$@
+	rm -f $@.tmp
+
+# Embed the built-in fallback configuration. Same shape as the rules above;
+# .txt had no rule because nothing text-based was embedded before.
+%_txt.s: %.txt
+	rm -f $@.tmp
+	rm -f $@
+	bin2s $^ $@.tmp $(subst -,_,$(subst /,_,$*))_txt
 	sed -e "s/\.data/.section .rom/g" <$@.tmp >$@
 	rm -f $@.tmp
 
