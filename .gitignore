@@ -64,6 +64,11 @@ bin/
 # Boot-test payload: downloaded kernel/initrd and assembled USB tree
 dist/
 
+# PS2 Linux Live / BlackRhino media. A 1.7GB ISO of somebody else's
+# distribution plus the kernel and initrd extracted from it -- third-party
+# material, far too large for a git repo, and reproducible from the disc.
+blackrhino/
+
 # ---------------------------------------------------------------------------
 # kernelloader build output.
 #

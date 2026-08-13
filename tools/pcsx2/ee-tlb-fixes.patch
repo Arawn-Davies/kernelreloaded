@@ -324,7 +324,7 @@ index 63543ded7..f0d51d99c 100644
  extern void memClearPageAddr(u32 vaddr);
  extern void memBindConditionalHandlers();
 diff --git a/pcsx2/R5900.cpp b/pcsx2/R5900.cpp
-index d6a196bc5..524b53ef9 100644
+index d6a196bc5..a1bae247c 100644
 --- a/pcsx2/R5900.cpp
 +++ b/pcsx2/R5900.cpp
 @@ -26,6 +26,7 @@
@@ -343,7 +343,7 @@ index d6a196bc5..524b53ef9 100644
  	cpuRegs.CP0.n.PRid		= 0x00002e20; // PRevID = Revision ID, same as R5900
  	fpuRegs.fprc[0]			= 0x00002e30; // fpu Revision..
  	fpuRegs.fprc[31]		= 0x01000001; // fpu Status/Control
-@@ -91,12 +93,52 @@ void cpuReset()
+@@ -91,12 +93,76 @@ void cpuReset()
  	CBreakPoints::ClearSkipFirst();
  }
  
@@ -354,6 +354,17 @@ index d6a196bc5..524b53ef9 100644
 +// normal case and would drown everything else, so they are counted rather
 +// than printed unless they are at an address that keeps repeating.
 +static int eeExcBudget = 300;
++
++// Guest syscall trace -- an strace for something we cannot rebuild.
++//
++// Linux userspace enters the kernel with the syscall instruction, which shows
++// up here as excode 8 with the call number in v0. MIPS Linux numbers start at
++// 4000, which conveniently separates them from the PS2 BIOS syscalls that use
++// this same exception and would otherwise drown the log.
++//
++// Bounded: bash issues thousands, and the interesting part is the first few
++// hundred, up to wherever it goes wrong.
++static int eeSyscallBudget = 400;
 +
 +// The last few user-space faults, so an exception carries its own run-up
 +// instead of needing to be correlated against a separate trace by hand.
@@ -372,6 +383,19 @@ index d6a196bc5..524b53ef9 100644
 +
 +	{
 +		const u32 excode = (code >> 2) & 0x1f;
++
++		if (excode == 8 && eeSyscallBudget > 0)
++		{
++			const u32 nr = cpuRegs.GPR.n.v0.UL[0];
++			if (nr >= 4000 && nr < 5000)
++			{
++				eeSyscallBudget--;
++				Console.WriteLn("  SYS %4u a0=%08x a1=%08x a2=%08x pc=%08x asid=%02x",
++					nr - 4000, cpuRegs.GPR.n.a0.UL[0], cpuRegs.GPR.n.a1.UL[0],
++					cpuRegs.GPR.n.a2.UL[0], cpuRegs.pc,
++					cpuRegs.CP0.n.EntryHi & 0xff);
++			}
++		}
 +
 +		// 0 = interrupt, 2/3 = the TLB misses that are the normal path,
 +		// 8 = syscall, which the BIOS issues constantly.
@@ -396,7 +420,7 @@ index d6a196bc5..524b53ef9 100644
  	cpuRegs.CP0.n.Cause = code & 0xffff;
  
  	if(cpuRegs.CP0.n.Status.b.ERL == 0)
-@@ -106,7 +148,7 @@ __ri void cpuException(u32 code, u32 bd)
+@@ -106,7 +172,7 @@ __ri void cpuException(u32 code, u32 bd)
  		checkStatus = (cpuRegs.CP0.n.Status.b.BEV == 0); //  for TLB/general exceptions
  
  		if (((code & 0x7C) >= 0x8) && ((code & 0x7C) <= 0xC))
@@ -405,7 +429,7 @@ index d6a196bc5..524b53ef9 100644
  		else if ((code & 0x7C) == 0x0)
  			offset = 0x200; //Interrupt
  		else
-@@ -164,8 +206,239 @@ __ri void cpuException(u32 code, u32 bd)
+@@ -164,14 +230,258 @@ __ri void cpuException(u32 code, u32 bd)
  	cpuUpdateOperationMode();
  }
  
@@ -645,7 +669,26 @@ index d6a196bc5..524b53ef9 100644
  	// Avoid too much spamming on the interpreter
  	if (Cpu != &intCpu || IsDebugBuild) {
  		Console.Error("cpuTlbMiss pc:%x, cycl:%x, addr: %x, status=%x, code=%x",
-@@ -181,6 +454,12 @@ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
+ 				cpuRegs.pc, cpuRegs.cycle, addr, cpuRegs.CP0.n.Status.val, excode);
+ 	}
+ 
++	// A fault on a near-null address is never legitimate here, and it is the
++	// signature of the bash crash: exccode 3 (TLB store) reported at a pc
++	// whose instruction is a syscall, which performs no store. Log it in full
++	// regardless of the trace budget -- it is rare, so it cannot spam.
++	if (addr < 0x10000)
++	{
++		Console.Error("  NEARNULL addr=%08x pc=%08x excode=%u branch=%u opcode=%08x "
++			"delayop=%08x epc=%08x cause=%08x",
++			addr, cpuRegs.pc, excode, (u32)cpuRegs.branch, cpuRegs.code,
++			cpuRegs.branch ? 1u : 0u,
++			cpuRegs.CP0.n.EPC, cpuRegs.CP0.n.Cause);
++	}
++
+ 	cpuRegs.CP0.n.BadVAddr = addr;
+ 	cpuRegs.CP0.n.Context &= 0xFF80000F;
+ 	cpuRegs.CP0.n.Context |= (addr >> 9) & 0x007FFFF0;
+@@ -181,6 +491,12 @@ void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
  	cpuException(excode, bd);
  }
  
@@ -658,7 +701,7 @@ index d6a196bc5..524b53ef9 100644
  void cpuTlbMissR(u32 addr, u32 bd) {
  	cpuTlbMiss(addr, bd, EXC_CODE_TLBL);
  }
-@@ -361,6 +640,7 @@ static bool cpuIntsEnabled(int Interrupt)
+@@ -361,6 +677,7 @@ static bool cpuIntsEnabled(int Interrupt)
  __fi void _cpuEventTest_Shared()
  {
  	eeEventTestIsActive = true;
@@ -679,7 +722,7 @@ index 5566cd1b6..27dcb8e27 100644
  extern void cpuTlbMissW(u32 addr, u32 bd);
  extern void cpuTestHwInts();
 diff --git a/pcsx2/R5900OpcodeImpl.cpp b/pcsx2/R5900OpcodeImpl.cpp
-index fecebece9..50648f757 100644
+index fecebece9..a154ffacc 100644
 --- a/pcsx2/R5900OpcodeImpl.cpp
 +++ b/pcsx2/R5900OpcodeImpl.cpp
 @@ -509,10 +509,29 @@ void DSRLV(){ if (!_Rd_) return; cpuRegs.GPR.r[_Rd_].UD[0] = (u64)(cpuRegs.GPR.r
@@ -715,7 +758,49 @@ index fecebece9..50648f757 100644
  
  	Cpu->CancelInstruction();
  }
-@@ -1046,8 +1065,20 @@ void SYSCALL()
+@@ -909,6 +928,23 @@ void SYSCALL()
+ {
+ 	u8 call;
+ 
++	// The PS2 BIOS keys its syscalls on v1, which is right for software calling
++	// the BIOS. Linux puts its syscall number in v0 and treats v1 as scratch, so
++	// every Linux syscall also selects a handler below. Most are logging and do
++	// no harm, but GetOsdConfigParam and GetOsdConfigParam2 write to the address
++	// held in a0. bash calling connect(3, ...) had a0 = the file descriptor, 3,
++	// so four bytes went to address 0x00000003 and the guest kernel killed it
++	// with SIGSEGV at an instruction that performs no store. The same kernel and
++	// bash binary run correctly on real hardware, which has no HLE.
++	//
++	// Linux o32 syscall numbers are 4000-4999 and a BIOS call never puts one in
++	// v0, so that tells the callers apart -- but only the two writes are guarded
++	// on it. Skipping the whole switch breaks the SBIOS, which needs some of
++	// these; it faulted in sbcall_cdvdinit. Mode is not a discriminator either:
++	// PS2 threads run in user mode, which is why the syscall interface exists.
++	const bool linuxSyscall =
++		cpuRegs.GPR.n.v0.UL[0] >= 4000 && cpuRegs.GPR.n.v0.UL[0] < 5000;
++
+ 	if (cpuRegs.GPR.n.v1.SL[0] < 0)
+ 		call = (u8)(-cpuRegs.GPR.n.v1.SL[0]);
+ 	else
+@@ -999,7 +1035,7 @@ void SYSCALL()
+ 			AllowParams1 = true;
+ 			break;
+ 		case Syscall::GetOsdConfigParam:
+-			if (!NoOSD && !AllowParams1)
++			if (!NoOSD && !AllowParams1 && !linuxSyscall)
+ 			{
+ 				ReadOSDConfigParames();
+ 
+@@ -1038,7 +1074,7 @@ void SYSCALL()
+ 			}
+ 			break;
+ 		case Syscall::GetOsdConfigParam2:
+-			if (!NoOSD && !AllowParams2)
++			if (!NoOSD && !AllowParams2 && !linuxSyscall)
+ 			{
+ 				ReadOSDConfigParames();
+ 
+@@ -1046,8 +1082,20 @@ void SYSCALL()
  				u32 size = cpuRegs.GPR.n.a1.UL[0];
  				u32 offset = cpuRegs.GPR.n.a2.UL[0];
  

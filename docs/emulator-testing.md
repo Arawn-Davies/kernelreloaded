@@ -473,3 +473,44 @@ re-execs; the real process is reparented away from the wrapper, its argv
 no longer contains the AppImage name, and its `comm` is truncated to 15
 characters. `timeout`, `pkill -f <appimage>` and `pkill -x pcsx2-qt` all
 fail to reap it. Use `tools/killpcsx2.sh`.
+
+---
+
+## PS2 Linux Live v3 (BlackRhino) from its own disc
+
+The Live disc carries everything: `SYSTEM.CNF` pointing at its own
+`KLOADER.ELF`, a `CONFIG.TXT` naming `cdfs:boot/vmlinux.gz` and
+`cdfs:boot/initrd.gz`, and `DISC.BIN` — a 1.7GB ext2 filesystem stored as a
+plain file on the ISO, which the initrd loop-mounts as the real root. That is
+why `DISC.BIN` on its own looks like a bare ext2 image with no ISO9660 on it:
+it is a loopback image, not a burned disc.
+
+Its kernel and initrd are byte-identical (md5) to the `vmlinux.gz` and
+`initrd.gz` that have been used for emulator testing all along, so the "2010
+kernel" in the table above *is* BlackRhino's.
+
+**Our loader cannot read this disc, and it is not the disc's fault.** The ISO
+has a valid ISO9660 tree with `BOOT/VMLINUX.GZ` exactly where `CONFIG.TXT`
+says. `cdfs:` fails identically on the lowercase path from its own config and
+on the uppercase 8.3 name, so it is not case. Two further facts:
+
+- `isDVDVSupported()` returns `eromdrvSupport`, which is only set when
+  `rom1:EROMDRVE` loads. This PCSX2 BIOS dump has no such module, so it stays
+  0 — and the *entire* disc-type detection in the boot path is gated behind
+  it, meaning the drive is never told what it is looking at.
+- `SMSCDVD.c` reads only through `sceCdRead`. `ReadDVDVSectors()`, the one
+  function that calls `sceCdReadDVDV`, is defined and never called — dead
+  code, even though `sceCdReadDVDV` is in `imports.lst`. There is no
+  `sceCdSetMmode` import, so the choice of read function is the only lever
+  available.
+
+Wiring `ReadDVDVSectors()` in as a fallback after a failed CD-mode read did
+**not** fix it, and was reverted. Nothing was learned from that attempt
+because SMSCDVD's `printf` goes to IOP stdout, which the PCSX2 log does not
+capture — its own startup banner is absent too. Before touching the read path
+again, make its failures visible on the EE side; guessing at read modes blind
+is what wasted the time.
+
+Until then, load the kernel and initrd from `host:` and leave the ISO
+attached. `DISC.BIN` is read by the *kernel's* CD driver, not the loader's,
+so the boot is still genuinely from the disc.
