@@ -152,14 +152,20 @@ In order, each step meaningful on its own:
    stripped, so `System.map` resolves any address the PCSX2 EE state dump
    reports back to a function name — something we never had before.
    `romcons_console_write` is present at `0x801026d0`.
-3. It boots under PCSX2 through kernelloader and reaches at least
-   `Freeing unused kernel memory` — i.e. no worse than the prebuilt kernel,
-   which is the control.
-4. Booted with `romcons` on the command line, kernel messages appear **in the
-   PCSX2 log**. That is the deliverable.
+3. ~~It boots under PCSX2 through kernelloader and reaches at least
+   `Freeing unused kernel memory`.~~ **Done.**
+4. ~~Booted with `romcons`, kernel messages appear in the PCSX2 log.~~
+   **Done** — and with `console=tty0 console=romcons` they appear on the GS
+   framebuffer as well, since Linux prints to every registered console.
+5. ~~A shell.~~ **Done, on both.** `minish` brings one up on the GS console
+   with a USB keyboard and another on SIO; `bash` runs on real hardware as a
+   login shell, sources `/etc/profile`, and gives coloured `ls`. Under PCSX2 it
+   needed one further emulator fix — see `tools/pcsx2/README.md` bug 7.
 
-Step 4 is what unblocks the bash investigation, where the open question is why
-a shell fails while smaller binaries exec fine.
+Two kernel changes were needed and are in `patches/romcons-input.patch`: the
+ROM console tty had no receive path at all, so every `read()` returned EOF and
+any shell exited on the spot, and `romtty_write` returned its decremented loop
+counter so every write reported an error.
 
 ## Not in scope
 

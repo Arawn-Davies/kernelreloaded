@@ -1,14 +1,38 @@
 # PCSX2 patches
 
-`ee-tlb-fixes.patch` applies to PCSX2 (developed against `v2.7.159-3-g337daf7ed`)
-and is what gets PS2 Linux past `Freeing unused kernel memory: 88k freed` under
-emulation. Nothing in it is specific to kernelloader; it is all R5900 MMU
-behaviour that PCSX2 had wrong.
+Two patches, both against `v2.7.159-3-g337daf7ed`.
+
+| Patch | What it is |
+|---|---|
+| `ee-tlb-fixes.patch` | everything needed to run PS2 Linux: the MMU fixes, the BIOS-syscall fix, and the instrumentation that found them |
+| `logwindow-font.patch` | unrelated quality-of-life: the log window set no font size on Linux, so it rendered unreadably small under WSLg |
 
 ```sh
 git -C /path/to/pcsx2 apply /path/to/ee-tlb-fixes.patch
 cmake --build build --parallel "$(nproc)"
 ```
+
+Together these take PS2 Linux from stopping at `Freeing unused kernel memory:
+88k freed` to a working interactive bash. None of it is specific to
+kernelloader; it is all R5900 behaviour PCSX2 had wrong, and every fix was
+confirmed against a real console, where the same kernel, initrd and bash binary
+behave correctly without any of it.
+
+## What is a fix and what is a probe
+
+The patch is the working set, so it contains both. If any of it is ever
+proposed upstream the instrumentation has to come out first — it is unbounded
+in principle, keyed to budgets that suit a debugging session, not a release.
+
+**Emulation fixes** — `COP0.cpp`, `vtlb.cpp`, `vtlb.h`, `Memory.cpp`,
+`Memory.h`, the `cpuTlbMiss` / `cpuTlbModified` / `cpuException` changes in
+`R5900.cpp`, and the `SYSCALL` guard in `R5900OpcodeImpl.cpp`.
+
+**Instrumentation** — `cpuStateDump()`, the `TLBMISS` / `TLBWI` / `TLBWR`
+traces, `eeRecentUserFault*`, the `SYS` syscall trace, and the `NEARNULL`
+report. These are budget-limited (`eeTraceBudget`, `eeSyscallBudget`) so they
+cannot flood, and `NEARNULL` is deliberately unlimited because a fault below
+address 0x10000 is rare and was the signature of the last bug.
 
 ## Why any of this was needed
 
@@ -133,3 +157,37 @@ One trap worth keeping: `cpuRegs.cycle` is declared `u64` but wraps at 32 bits
 in practice. A dump scheduled on an absolute deadline past 2^32 fires once and
 never again, which silently produced no post-handoff output at all. Compare a
 32-bit delta.
+
+## Red/green
+
+`redgreen.sh` boots one AppImage with our own kernel and the minish initrd and
+reports the furthest milestone reached, so which patches are load-bearing is a
+measurement rather than an assumption. It exits 0 only on a shell, so it can
+drive a bisect.
+
+```sh
+./redgreen.sh /path/to/pcsx2-qt.AppImage "label"
+```
+
+The ladder is `kernel booted` → `init memory freed` → `root mounted` →
+`shell running`. Measured on 2026-08-13, identical kernel and initrd on both:
+
+| Build | Reached | `COP0_TLBWR` writes |
+|---|---|---|
+| stock `v2.7.159-3-g337daf7ed` | init memory freed | 61,184 |
+| with `ee-tlb-fixes.patch` | **shell running** | 0 |
+
+The stock number is the whole failure in one line: 61,184 writes, every one of
+them `index 0, EntryHi 7fff6101` — the same user stack page, refilled forever
+into the same wired entry. `Random` is never written so `tlbwr` always picks
+index 0, and no TLB Invalid exception exists so the refill handler reinstalls
+the same invalid PTE and retries for eternity. The kernel never returns from
+the `printk` it was in the middle of, which is why the framebuffer freezes
+mid-word on "Freeing un" rather than printing a panic.
+
+Two things will make the harness lie:
+
+- do not run it while anything else does `pkill pcsx2`; it kills the run and
+  the script reports whatever stage the last log happened to reach
+- do not launch PCSX2 with `setsid`, or no window appears under WSLg and the
+  run cannot be watched
