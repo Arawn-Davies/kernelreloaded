@@ -150,8 +150,32 @@ if ($missing.Count -gt 0) {
     exit 0
 }
 
-$vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
-if (-not (Test-Path $vcvars)) { Die "vcvars64.bat not found under $vsPath" }
+# Check the install build-dependencies.bat will actually pick, not the one we
+# would. It queries vswhere WITHOUT -requires:
+#     vswhere -version "[17, 18)" -latest -property installationPath
+# so it takes the newest VS2022 whether or not it has the C++ workload. With
+# two installs present -- say Community without C++ and Build Tools with it --
+# our check passes against one while the bat calls vcvars64.bat under the other
+# and dies with
+#     '"...\VC\Auxiliary\Build\vcvars64.bat"' is not recognized
+$batVs = & $vswhere -version "[17, 18)" -latest -property installationPath 2>$null | Select-Object -First 1
+if (-not $batVs) { $batVs = $vsPath }
+$batVcvars = Join-Path $batVs 'VC\Auxiliary\Build\vcvars64.bat'
+if (-not (Test-Path $batVcvars)) {
+    Write-Host "`nbuild-dependencies.bat will select this VS2022 install:" -ForegroundColor Yellow
+    Write-Host "  $batVs"
+    Write-Host "and it has no vcvars64.bat, so the C++ workload is not installed there." -ForegroundColor Yellow
+    Write-Host "`nAdd it:" -ForegroundColor Yellow
+    Write-Host "  & `"`${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe`" modify ``"
+    Write-Host "      --installPath `"$batVs`" ``"
+    Write-Host "      --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --quiet --norestart"
+    Write-Host "`nThen confirm the file exists before re-running:" -ForegroundColor Yellow
+    Write-Host "  Test-Path `"$batVcvars`""
+    Die "C++ workload missing from the install build-dependencies.bat uses."
+}
+
+$vcvars = $batVcvars
+Note "vcvars64:      $vcvars"
 Note "Visual Studio: $vsPath"
 Note "git:           $((Get-Command git).Source)"
 
