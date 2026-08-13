@@ -1,0 +1,45 @@
+Let the boot logo scroll away instead of holding the top of the screen.
+
+ps2con_setup() makes room for the logo by setting conp->vc_top = logo_lines,
+which moves the *top of the scrolling region* below it.  Those rows are then
+excluded from every scroll, so the logo does not move: it holds the top five
+rows of a 640x512 PAL console -- about 15% of the screen -- for the whole
+session, and long output such as `ls` loses its first lines off the top of a
+region that is shorter than the screen.
+
+Stock 2.4 undoes the reservation in exactly three places, all inherited
+unchanged by ps2con.c from fbcon.c: a full-screen clear (ps2con_clear), a VT
+switch (ps2con_switch), and manual scrollback (ps2con_scrolldelta).  A PS2
+Linux boot to a single console hits none of them, so the reservation is
+permanent -- this is stock behaviour that simply never showed on a desktop,
+where switching to tty2 or a login program clearing the screen releases it
+within seconds of boot.
+
+Release it on the first scroll instead, using the same three lines the switch
+path already uses.  The logo is drawn into the framebuffer like any other
+pixels, so once its rows rejoin the scrolling region it scrolls up and off with
+the text below it, which is the behaviour people expect from a boot logo.
+
+Nothing else changes: the logo is still drawn, still occupies the top of the
+screen for as long as nothing has scrolled, and a console that never scrolls
+keeps it indefinitely.
+
+--- a/drivers/video/ps2con.c
++++ b/drivers/video/ps2con.c
+@@ -975,6 +975,16 @@
+     if (!count || vt_cons[unit]->vc_mode != KD_TEXT)
+ 	return 0;
+
++    /* Hand the logo rows back to the scrolling region on the first scroll,
++       so the logo scrolls up and off with the text that follows it. */
++    if (logo_shown >= 0) {
++	struct vc_data *conp2 = vc_cons[logo_shown].d;
++
++	if (conp2->vc_top == logo_lines && conp2->vc_bottom == conp2->vc_rows)
++	    conp2->vc_top = 0;
++	logo_shown = -1;
++    }
++
+     ps2con_cursor(conp, CM_ERASE);
+
+     switch (dir) {

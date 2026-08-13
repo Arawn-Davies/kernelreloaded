@@ -78,7 +78,7 @@ if [ ! -d "$KSRC" ]; then
     # Ours, not upstream's -- hence linux/phase1/patches rather than linux/patches/.
     # Without this the ROM console tty is write-only and every shell started
     # on it reads EOF and exits on the spot. See the patch header.
-    for p in romcons-input; do
+    for p in romcons-input logo-scrolls-away; do
         patch -p1 -s <"$LINUX/phase1/patches/$p.patch"
         echo "  applied $p (ours)"
     done
