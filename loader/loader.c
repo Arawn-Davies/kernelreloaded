@@ -1275,7 +1275,7 @@ char *load_file(const char *filename, int *size, void *addr)
 	dprintf("Loading...\n");
 	int pos = 0;
 	int n;
-	int next = 10000;
+	int next = 256 * 1024;
 	kprintf("%s size %d\n", filename, *size);
 	while ((n = fread(&buffer[pos], 1, next, fin)) > 0) {
 		pos += n;
@@ -1350,13 +1350,24 @@ char *load_kernel_file(const char *filename, int *size)
 	dprintf("Loading...\n");
 	int pos = 0;
 	int n;
-	int next = 10 * 1024;
+	/* 10kB chunks meant roughly four hundred round trips for a 4MB image.
+	 * The buffer is already allocated in full, so read into it in far
+	 * larger pieces. */
+	int next = 256 * 1024;
 	while ((n = gzread(fin, &buffer[pos], next)) > 0) {
 		dprintf("n = %d\n", n);
 		pos += n;
 		dprintf("pos = %d\n", pos);
 		graphic_setPercentage(pos / (maxsize / 100), filename);
+
+		/* Keep the next read inside the buffer rather than declaring the
+		 * file too big the moment a full chunk would not fit. With 10kB
+		 * chunks that margin was invisible; at 256kB it would reject
+		 * images that actually fit. */
 		if ((pos + next) > maxsize) {
+			next = maxsize - pos;
+		}
+		if (next <= 0) {
 			error_printf("Error file %s is too big (free %ukB).\n", filename, maxsize / 1024);
 			if (maxsize < (6 * 1024 * 1024)) {
 				error_printf("Restart kernelloader for more free memory (max. 6MB for video mode auto).");

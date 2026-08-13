@@ -27,25 +27,58 @@ volatile const crc32_section_t crc[] __attribute__ ((__section__ (".crc32"))) = 
 	{ .section = ".rodata", .start = (uint32_t) &_frodata, .end = (uint32_t) &_erodata },
 };
 
-uint32_t calc_crc(const uint8_t *data, long size)
+/* This is an odd CRC: the register shifts left, MSB first, but the data bits
+ * are fed in starting from the LSB. That is the same as an ordinary MSB-first
+ * CRC over bit-reversed bytes, which is what makes a table possible at all.
+ *
+ * Doing it a bit at a time cost about 2.3 seconds per pass, and the loader
+ * makes three passes, so a quarter of the entire boot was spent here. Both
+ * tables are built once from the original bit loop rather than being written
+ * out as constants, so they cannot drift from it, and the result is identical
+ * to what crc32gen wrote into the .crc32 section.
+ */
+static uint32_t crc_table[256];
+static uint8_t crc_reverse[256];
+static int crc_table_ready = 0;
+
+static void build_crc_table(void)
 {
-	uint32_t crc32 = 0; /* Schieberegister */
 	int i;
 	int n;
 
-	for (i = 0; i < size; i++) {
-		for (n = 0; n < 8; n++) {
-			uint8_t bit;
-			uint8_t databit;
+	for (i = 0; i < 256; i++) {
+		uint32_t crc32 = ((uint32_t) i) << 24;
+		uint8_t r = 0;
 
-			bit = crc32 >> 31;
-			databit = (data[i] >> n) & 1U;
-			if (bit != databit) {
+		for (n = 0; n < 8; n++) {
+			if (crc32 & 0x80000000U) {
 				crc32 = (crc32 << 1) ^ CRC32MASK;
 			} else {
 				crc32 <<= 1;
 			}
+			if (i & (1 << n)) {
+				r |= 1 << (7 - n);
+			}
 		}
+		crc_table[i] = crc32;
+		crc_reverse[i] = r;
+	}
+	crc_table_ready = 1;
+}
+
+uint32_t calc_crc(const uint8_t *data, long size)
+{
+	uint32_t crc32 = 0; /* Schieberegister */
+	long i;
+
+	if (!crc_table_ready) {
+		build_crc_table();
+	}
+
+	for (i = 0; i < size; i++) {
+		uint8_t idx = (crc32 >> 24) ^ crc_reverse[data[i]];
+
+		crc32 = (crc32 << 8) ^ crc_table[idx];
 	}
 	return crc32;
 }
