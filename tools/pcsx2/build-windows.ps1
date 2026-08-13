@@ -172,13 +172,16 @@ if (-not (Test-Path $batVcvars)) {
         # unavailable, and retyping an installer invocation by hand is how
         # typos become an hour of confusion.
         #
-        # Deliberately NOT --quiet: this is a multi-GB download, and silence is
-        # indistinguishable from a hang. --wait so we do not race the installer.
+        # --passive, not --quiet: vs_installer needs one of the two to run
+        # unattended at all -- given neither it just opens the GUI and returns --
+        # and --passive still shows a progress bar. This is a multi-GB download,
+        # where silence is indistinguishable from a hang. --wait so the check
+        # below does not race the installer.
         Say "adding the C++ workload to $batVs"
-        Note "Several GB. The installer window shows progress; this waits for it."
+        Note "Several GB. A progress window appears; this waits for it."
         & $vsInstaller modify --installPath $batVs `
             --add Microsoft.VisualStudio.Workload.NativeDesktop `
-            --includeRecommended --norestart --wait
+            --includeRecommended --passive --norestart --wait
         Note "installer exit code: $LASTEXITCODE"
 
         if (Test-Path $batVcvars) {
@@ -191,7 +194,7 @@ if (-not (Test-Path $batVcvars)) {
     else {
         Write-Host "`nRe-run with -InstallPrereqs and this script will add it for you," -ForegroundColor Yellow
         Write-Host "or do it by hand:" -ForegroundColor Yellow
-        Write-Host "  & `"$vsInstaller`" modify --installPath `"$batVs`" --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --norestart"
+        Write-Host "  & `"$vsInstaller`" modify --installPath `"$batVs`" --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --passive --norestart"
         Die "C++ workload missing from the install build-dependencies.bat uses."
     }
 }
