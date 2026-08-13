@@ -2415,6 +2415,14 @@ static int real_loader(void)
 		kputs("Kernel mode print\n");
 		kprintf("Stack 0x%08x\n", sp);
 
+		/* DEV9PROBE: pccard_type is the only thing that tells Linux the HDD and
+		 * ethernet exist -- arch/mips/ps2/setup.c assigns it straight to
+		 * ps2_pccard_present, which ps2ide.c and smap.c both gate on. Every
+		 * input to that decision is printed here, so a boot log says which one
+		 * refused rather than only that the device was "NOT present". */
+		kprintf("DEV9PROBE: slim=%d enableDev9=%d network=%d\n",
+			isSlimPSTwo(), loaderConfig.enableDev9, hasNetworkSupport());
+
 		if (isSlimPSTwo()) {
 			if (loaderConfig.enableDev9 && hasNetworkSupport()) {
 				/* Use value 0x0200 to inform Linux about slim PSTwo. This was not part of Sony's Linux. */
@@ -2422,8 +2430,12 @@ static int real_loader(void)
 			}
 		} else {
 			if (loaderConfig.enableDev9 && hasNetworkSupport()) {
+				int dev9rv;
+
 				/* DEV9 can be only used by Linux, when PS2LINK is not loaded. */
-				if (ps2dev9_init() == 0) {
+				dev9rv = ps2dev9_init();
+				kprintf("DEV9PROBE: ps2dev9_init -> %d\n", dev9rv);
+				if (dev9rv == 0) {
 					const char *pcicType;
 
 					/* Activate hard disc. */
