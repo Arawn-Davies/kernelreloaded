@@ -1,6 +1,6 @@
 PS2LINUXDVD = /media/cdrom
 TARGET_IP = 192.168.1.10
-EXAMPLE_ELF = ../hello/hello.elf
+EXAMPLE_ELF = ../tools/hello/hello.elf
 
 # Set debug output type:
 # 1. fileio - SIF RPC stdout
@@ -64,3 +64,4 @@ SIO_DEBUG = yes
 else
 SIO_DEBUG = no
 endif
+

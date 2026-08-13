@@ -1,23 +1,20 @@
 include config.mk
 
 all:
-	make -C ppm2rgb
-	make -C png2rgb
-	make -C hello
+	make -C tools/ppm2rgb
+	make -C tools/png2rgb
+	make -C tools/hello
 	make -C kernel
-	make -C sharedmem
 	# smaprpc and dev9init restored from 4ba4d6e^. On a slim PSTwo, Linux cannot
 	# drive the ethernet from the EE side -- loader.c's own comment on
 	# intrelay-dev9-rpc says "Network not working from EE side (use smaprpc.irx)".
 	# Removing them was safe for a fat console and broke NFS root on a slim.
-	make -C smaprpc
-	make -C dev9init
+	make -C iop
 	make -C TGE
 	if [ -e $(PS2LINUXDVD)/pbpx_955.09 ]; then \
 		make -C RTE; \
 	fi
-	make -C modules
-	make -C crc32gen
+	make -C tools/crc32gen
 	make -C loader
 
 test:
@@ -28,14 +25,11 @@ reset:
 
 clean:
 	make -C kernel clean
-	make -C hello clean
-	make -C sharedmem clean
-	make -C smaprpc clean
-	make -C dev9init clean
+	make -C iop clean
 	make -C TGE clean
 	make -C RTE clean
-	make -C modules clean
 	make -C loader clean
-	make -C crc32gen clean
-	make -C ppm2rgb clean
-	make -C png2rgb clean
+	make -C tools/crc32gen clean
+	make -C tools/ppm2rgb clean
+	make -C tools/png2rgb clean
+	make -C tools/hello clean

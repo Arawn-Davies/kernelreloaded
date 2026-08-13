@@ -9,10 +9,10 @@ IOP_SRC_DIR  = ./
 IOP_BIN = dev9init.irx
 IOP_OBJS = dev9init.o hdd.o imports.o
 IOP_LDFLAGS = -Wl,-s
-IOP_CFLAGS = -D_PS2_ -I../include
+IOP_CFLAGS = -D_PS2_ -I../../include
 
 install: all
-	install -m 644 $(IOP_BIN) ../loader/
+	install -m 644 $(IOP_BIN) ../../loader/
 
 all: $(IOP_BIN)
 

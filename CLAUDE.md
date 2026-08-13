@@ -28,22 +28,32 @@ all under gcc 15.
 
 ## Layout
 
-**The kernelloader source IS the repo.** `Makefile`, `kernel/`, `TGE/`,
-`loader/`, `modules/` and the rest sit at the top level, so `make` here just
-works and there is exactly one source tree.
+**The kernelloader source IS the repo.** `Makefile`, `kernel/`, `TGE/` and
+`loader/` sit at the top level, so `make` here just works and there is exactly
+one source tree.
+
+The four EE-side directories stay at the root because everything else installs
+*into* `loader/` — `TGE/sbios/Makefile` does `install ../../loader/TGE/`, every
+IOP module does `cp $(IOP_BIN) ../../loader`, `kernel/Makefile` writes
+`../loader/kernel.elf`. Burying `loader/` a level deeper buys tidiness and costs
+fifteen install paths. Everything that does *not* have that coupling was grouped
+on 2026-08-13; the root went from 37 tracked entries to 18.
 
 | Path | What it is |
 |---|---|
 | `Makefile`, `config.mk` | upstream's top-level build, drives everything below |
+| `build.sh` | builds the tree inside the Docker toolchain |
+| `Dockerfile` | toolchain image on `ghcr.io/ps2dev/ps2dev` |
 | `loader/` | the loader itself — UI, config, file browsers → `kloader.elf` |
 | `kernel/` | EE kernel *stub* (`kernel.elf`), not Linux |
 | `TGE/` | the SBIOS; `TGE/iop/intrelay/` builds the intrelay IRXs |
-| `patches/` | **upstream's Linux kernel patch set** — nothing to do with our port |
-| `build.sh` | builds the tree inside the Docker toolchain |
-| `Dockerfile` | toolchain image on `ghcr.io/ps2dev/ps2dev` |
-| `tools/bin2s` | POSIX sh replacement for a tool modern ps2sdk dropped |
-| `assets/` | shipped textures; `assets/src/` holds unshipped source artwork |
-| `docs/` | internals, build-environment, porting-notes |
+| `RTE/` | Sony's SBIOS, built only if the Linux Kit disc is mounted |
+| `iop/` | every IOP module: `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader`. Its `Makefile` builds all six; they were four separate `make -C` lines at the root |
+| `include/` | the two headers shared between EE and IOP sides |
+| `linux/` | **everything about the guest OS, nothing about the loader** — `patches/` (upstream's Linux patch set), `kernelconfig`, `phase1/` (our from-source kernel build), the three `driver_*` trees, `buildlinux.sh`, `buildtoolchain.sh` |
+| `tools/` | host-side helpers: `bin2s` (POSIX sh replacement for a tool modern ps2sdk dropped), `crc32gen`, `png2rgb`, `ppm2rgb`, `hello`, `pcsx2/`, the deploy scripts |
+| `assets/` | shipped textures; `assets/src/` holds unshipped source artwork; `assets/mcicons/` the memory-card icon |
+| `docs/` | internals, build-environment, porting-notes; `docs/upstream/` holds upstream's own `readme.txt`, `install.txt`, `history.txt`, `TODO.txt` and `KNOWNPROBLEMS.txt` |
 
 **This was a git submodule until 2026-08-12, then briefly a nested `loader/`
 wrapper. It is neither now.** Upstream (citronalco/kernelloader) has been dead
@@ -55,6 +65,16 @@ source, and its content survives in history at `708c8ff`.
 
 **Do not re-add a submodule, a `.gitmodules`, a patch-application step, or a
 wrapper directory.**
+
+That includes splitting `linux/` out into a repo of its own, which looks
+tempting now that it is one directory. It is coupled to this tree, not merely
+adjacent: `linux/phase1/patches/romcons-input.patch` exists because TGE
+implements `SB_PUTCHAR` as `sio_putc()`, so a change to SBIOS call numbering is
+a change to that patch. Across a submodule boundary that is two commits and a
+pointer bump, and `git bisect` can no longer cross the seam that broke you. The
+whole pitch is `git clone && ./build.sh`. If the kernel ever becomes a shipped
+artifact with consumers other than this loader, `linux/` is the seam — and
+large binaries want a GitHub Release attachment, not a submodule or LFS.
 
 ## Build
 
@@ -91,9 +111,21 @@ wipe `dist/`, which holds a downloaded kernel and initrd that take a while to
 reassemble:
 
 ```sh
-git clean -Xdf kernel TGE loader modules sharedmem smaprpc \
-               dev9init crc32gen png2rgb ppm2rgb hello RTE
+git clean -Xdf kernel TGE RTE loader iop tools
 ./build.sh
+```
+
+That misses one thing `git clean` cannot see: `loader/.depend/` and its
+siblings are written by the container as **root**, so a host-side `rm -rf` gets
+`Permission denied` and the stale `.d` files survive. They record absolute
+prerequisite paths, so anything that moves a source directory leaves them
+pointing at a path that no longer exists — `No rule to make target
+'../crc32gen/crc32gen.h'`, from a Makefile that no longer says that. Clear them
+from inside the image:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work kernelreloaded:local \
+  bash -c 'find . -name .depend -type d -not -path "./dist/*" -exec rm -rf {} + ; true'
 ```
 
 ## Status
@@ -111,9 +143,10 @@ What works, as of 2026-08-13:
   bugs, six in the EE MMU and one in BIOS-syscall emulation. Stock PCSX2 stops
   dead at `Freeing unused kernel memory` in an endless TLB refill loop.
   `tools/pcsx2/redgreen.sh` demonstrates the difference in one command.
-- **The kernel is built from source** by `phase1/build-kernel.sh`, with our own
-  Tux logo and `phase1/patches/romcons-input.patch`, which makes the ROM console
-  tty readable — without it every shell reads EOF and exits silently.
+- **The kernel is built from source** by `linux/phase1/build-kernel.sh`, with
+  our own Tux logo and `linux/phase1/patches/romcons-input.patch`, which makes
+  the ROM console tty readable — without it every shell reads EOF and exits
+  silently.
 - **Boot to a shell takes about 19 seconds** under emulation, down from 61.
 
 Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel

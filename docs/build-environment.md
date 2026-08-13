@@ -37,7 +37,7 @@ The kernelloader source was a git submodule with our changes carried as
 Both are gone — see the README for why — and the tree now sits at the repo root,
 edited in place. What remains of that arrangement is the second half of
 `.gitignore`, which keeps the build's ~45 binaries and 17 generated headers out
-of git. (`patches/` still exists but holds only upstream's Linux kernel patch
+of git. (`linux/patches/` still exists but holds only upstream's Linux kernel patch
 set.)
 
 ## Base image
@@ -151,7 +151,7 @@ installed /usr/local/ps2dev/ps2sdk/iop/include/thbase.h
 
 ps2sdk expects IOP modules to be built *inside* its source tree, each declaring
 `IOP_IMPORT_INCS` to pull in the sibling modules it needs. Out-of-tree modules
-like kernelloader's `sharedmem/` do not, so they miss headers that the installed
+like kernelloader's `iop/sharedmem/` do not, so they miss headers that the installed
 SDK provides flattened.
 
 `iop/Rules.make:24` reads:
