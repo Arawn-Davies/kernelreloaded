@@ -769,6 +769,26 @@ extern "C" {
 		if (percentage > 100) {
 			percentage = 100;
 		}
+
+		/* The loaders call this once per read chunk -- hundreds of times
+		 * for a multi-megabyte kernel or initrd -- and every call used to
+		 * repaint the whole screen. Most of those repaints drew a frame
+		 * identical to the last one. Repaint only when something visible
+		 * actually changed; it takes about twenty seconds off loading a
+		 * 4MB initrd under an interpreter, and helps real hardware too.
+		 *
+		 * Compare the caller's pointer rather than the stored string:
+		 * loadName is only 26 bytes and longer names are stored ellipsed,
+		 * so comparing against it would never match for exactly the long
+		 * paths that need this most. The loaders pass the same pointer on
+		 * every iteration, which is what this is guarding. */
+		static const char *lastName = (const char *) -1;
+
+		if (percentage == loadPercentage && name == lastName) {
+			return;
+		}
+		lastName = name;
+
 		loadPercentage = percentage;
 
 		if (name != NULL) {
