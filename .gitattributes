@@ -1,0 +1,22 @@
+# Patches must survive a checkout byte-exact.
+#
+# Git for Windows defaults to core.autocrlf=true, which rewrites LF to CRLF in
+# the working tree. That silently corrupts every patch in this repo: `git apply`
+# and `patch` then fail on line endings alone, with a symptom that reads like a
+# malformed diff rather than a checkout artefact. `-text` disables the
+# conversion in both directions.
+#
+# This is the same class of problem that stops gcc 2.95 compiling CRLF sources
+# on the PS2 -- a backslash followed by CR is not a line continuation -- and it
+# cost an afternoon there before it was recognised. Not twice.
+*.patch -text
+*.diff -text
+
+# Shell scripts are run by bash, in a container or on a PS2. They need LF even
+# when the checkout happens on Windows.
+*.sh text eol=lf
+
+# Build inputs the toolchain reads. Makefiles in particular: a CRLF line ending
+# becomes part of a variable's value, so a path silently gains a stray \r.
+Makefile text eol=lf
+*.mk text eol=lf
