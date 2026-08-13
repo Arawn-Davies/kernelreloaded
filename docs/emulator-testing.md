@@ -14,9 +14,16 @@ Everything here was established against **PCSX2 2.6.3** on Windows with a PAL
 
 ## What it can and cannot tell you
 
-PS2 Linux writes its console to the **GS framebuffer**, not to SIO. So `printk`
-output never reaches the PCSX2 log: there is no `Linux version`, no `VFS:` line
-to grep for. Everything after the handoff has to be read off the screen.
+PS2 Linux writes its console to the **GS framebuffer** by default, not to SIO,
+so out of the box `printk` never reaches the PCSX2 log: no `Linux version`, no
+`VFS:` line to grep for, and everything after the handoff has to be read off
+the screen.
+
+That is fixable, and is fixed now. Boot with `romcons console=tty0
+console=romcons` and the kernel prints to **both** — the log and the
+framebuffer — because Linux writes to every registered console. `romcons`
+routes through `SB_PUTCHAR` to SIO, which PCSX2 logs. Everything below that
+predates this and describes reading the screen; the log is easier.
 
 kernelloader's own output *does* reach the log, via SIO, provided
 `EnableEEConsole = true`. Turning that off to quieten the log also removes every
@@ -257,9 +264,11 @@ Freeing unused kernel memory: 88k freed
 so between them they show the loader's job is finished and the handoff was
 clean.
 
-Under PCSX2 the screen currently stops there: the last line is `88k freed` and
-no userspace output follows. On real hardware the same build carries on to a
-shell prompt. See *What is still emulator-only*, below.
+On **stock** PCSX2 the screen stops there: the last line is `88k freed` and no
+userspace output follows. On real hardware the same build carries on to a shell
+prompt. That gap is now closed — `tools/pcsx2/ee-tlb-fixes.patch` gets the
+emulator to a shell as well. See *What was emulator-only*, below, for what
+the gap was.
 
 ### Messages that are expected, not faults
 
@@ -428,13 +437,25 @@ would print it, never sees these.
 
 ---
 
-## What is still emulator-only
+## What was emulator-only
 
-With the **2010** BlackRhino kernel, PCSX2 reaches
+**Resolved.** This section describes the symptom as it stood before
+`tools/pcsx2/ee-tlb-fixes.patch`; the diagnosis is kept because the
+elimination below is what pointed at the emulator, and because the same
+reasoning applies to the next stall.
+
+With the **2010** BlackRhino kernel, stock PCSX2 reaches
 `Freeing unused kernel memory: 88k freed` and stops. Userspace never
 starts, with either initrd -- including one whose `/sbin/init` is a shell
 script that prints immediately, so a successful `execve` could not be
 missed.
+
+The cause was six EE MMU faults, of which the decisive one is that PCSX2 could
+not raise a TLB Invalid exception at all, so the refill handler reinstalled the
+same invalid PTE for eternity. Measured on the last stock build: 61,184
+consecutive `tlbwr` writes, every one of them the same entry, index 0. The
+kernel never returns from the `printk` it is inside, which is why the screen
+freezes mid-word rather than panicking.
 
 The same `kloader.elf`, kernel, initrd and `CONFIG.TXT`, written to a
 USB stick, **boot to a shell on a real PS2**. So this is a PCSX2
@@ -457,7 +478,9 @@ and was a wrong turn. A 2x2 settles which component is at fault:
 | 2010 | 2012 | reaches `88k freed` |
 | 2012 | 2012 | stalls at `NET4:`, never finds the initrd |
 
-The kernel is the variable. Use the **2010** kernel for emulator work.
+The kernel is the variable. Use the **2010** kernel for emulator work -- or the
+one `phase1/build-kernel.sh` builds, which is the same 2.4.17 source with the
+ROM console fixed and is what everything since has used.
 
 ---
 
