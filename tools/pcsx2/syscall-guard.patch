@@ -1,0 +1,77 @@
+Run no BIOS syscall handler for a Linux syscall, not just the two that write.
+
+PR SCOPE: IN. Part of the minimal set needed to run Linux -- TLB/MMU/syscall
+emulation correctness. Belongs with ee-tlb-fixes.patch.
+
+Requires: ee-tlb-fixes.patch
+
+That patch guards GetOsdConfigParam and GetOsdConfigParam2 on v0 holding a Linux
+syscall number, because those two write to the address in a0. Three more
+handlers READ guest memory at an address taken from a0/a1, which under Linux are
+ordinary syscall arguments:
+
+    SetOsdConfigParam2      memRead8(memaddr++)
+    SetVTLBRefillHandler    memRead32(addr) x4
+    the console-log call    memRead32(a1), then PSM() on the result
+
+Those reads go through the vtlb, so a bad address raises a TLB miss charged to
+the syscall instruction itself. The guest kernel then kills the process with
+SIGSEGV at a pc that performs no memory access:
+
+    do_page_fault() #2: sending SIGSEGV to rcS for illegal read access from
+    00000000 (epc == 2ac4e43c ...)   insn @ epc: 24020fa3 0000000c 14e0fff7
+                                                 li v0,4003; syscall; bne
+
+SetGsCrt is unguarded too and yanks the video mode whenever v1 happens to select
+it, which is where the constant "Mode %x is not supported. Report me upstream"
+came from.
+
+The original comment notes that skipping the whole switch broke the SBIOS, which
+faulted in sbcall_cdvdinit -- v0 alone is not a reliable discriminator. Add
+where the syscall came from: TGE's SBIOS runs from KSEG0/KSEG1 (0x8xxxxxxx /
+0xAxxxxxxx), Linux userspace lives below 0x80000000, and the Linux kernel never
+executes a syscall instruction itself. Requiring both makes the test safe to
+apply to the whole switch, and sbcall_cdvdinit is unaffected.
+
+Tested: BlackRhino Linux init, which previously lost rcS and grep to SIGSEGV
+during boot, now reaches runlevel 2 and an X session. NOT tested against games,
+though by construction the guard cannot fire for one: a BIOS call does not put
+4000-4999 in v0, and PS2 titles do not execute syscalls from user-segment
+addresses.
+
+--- a/pcsx2/R5900OpcodeImpl.cpp
++++ b/pcsx2/R5900OpcodeImpl.cpp
+@@ -942,8 +942,15 @@
+ 	// on it. Skipping the whole switch breaks the SBIOS, which needs some of
+ 	// these; it faulted in sbcall_cdvdinit. Mode is not a discriminator either:
+ 	// PS2 threads run in user mode, which is why the syscall interface exists.
++	// v0 alone is not enough to tell the callers apart, which is why an earlier
++	// version of this guard could only be applied to the two handlers that write
++	// memory. Add where the syscall came FROM: TGE's SBIOS runs from KSEG0/KSEG1
++	// (0x8xxxxxxx / 0xAxxxxxxx), while Linux userspace lives below 0x80000000 and
++	// the Linux kernel never executes a syscall instruction itself. Requiring
++	// both makes the test safe to apply to the whole switch.
+ 	const bool linuxSyscall =
+-		cpuRegs.GPR.n.v0.UL[0] >= 4000 && cpuRegs.GPR.n.v0.UL[0] < 5000;
++		cpuRegs.GPR.n.v0.UL[0] >= 4000 && cpuRegs.GPR.n.v0.UL[0] < 5000 &&
++		cpuRegs.pc < 0x80000000;
+ 
+ 	if (cpuRegs.GPR.n.v1.SL[0] < 0)
+ 		call = (u8)(-cpuRegs.GPR.n.v1.SL[0]);
+@@ -952,6 +959,16 @@
+ 
+ 	BIOS_LOG("Bios call: %s (%x)", R5900::bios[call], call);
+ 
++	if (linuxSyscall)
++	{
++		// Run no handler at all: deliver the exception to the guest kernel and
++		// nothing else. Falling through the switch is not enough, because
++		// several handlers touch guest memory before any case is rejected.
++		cpuRegs.pc -= 4;
++		cpuException(0x20, cpuRegs.branch);
++		return;
++	}
++
+ 
+ 	switch (static_cast<Syscall>(call))
+ 	{
