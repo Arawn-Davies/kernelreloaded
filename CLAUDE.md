@@ -153,6 +153,24 @@ Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel
 and initrd have to be loaded from `host:` or a card. See the end of
 `docs/emulator-testing.md` — including what was already tried and reverted.
 
+## Pretending to have more RAM
+
+`FAKE_EXTRA_RAM` in `config.mk` (default 64) makes the loader tell Linux the
+console has more than a retail PS2's 32MB. The chain is short: `loader.c` puts
+it in `bootinfo.maxmem`, and the kernel's `arch/mips/ps2/prom.c` does
+`add_memory_region(0, ps2_bootinfo->maxmem & PAGE_MASK, BOOT_MEM_RAM)`. No
+kernel change is involved -- it is simply what Linux is told.
+
+**The memory has to actually exist.** Under PCSX2 that means `ExtraMemory=true`,
+which maps the 128MB T10K devkit layout; 64 sits inside it. A retail console has
+32MB and nothing else, and told otherwise the kernel hands out pages that are
+not there. Hence the opt-in flag and the `kprintf` on every boot: a default
+build cannot carry the lie onto hardware by accident. Blank the variable for a
+stock build.
+
+Boots as `On node 0 totalpages: 16383`, i.e. 16383 x 4K = 64MB, against
+`25268k/32764k` before.
+
 ## Hard-won gotchas
 
 **n32 `long` is 32-bit.** The single most important fix. `-mips3` used to imply

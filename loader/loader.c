@@ -2114,7 +2114,23 @@ static int real_loader(void)
 		bootpage.bootinfo.maxmem = 128 * 1024 * 1024;
 	} else {
 		bootpage.bootinfo.mach_type = PS2_BOOTINFO_MACHTYPE_PS2;
+#ifdef FAKE_MAXMEM_MB
+		/* Deliberate lie, for emulation only. prom.c does
+		 *     add_memory_region(0, ps2_bootinfo->maxmem & PAGE_MASK, ...)
+		 * so this is simply what Linux believes it has. A retail console has
+		 * 32MB and nothing else; told it has more, the kernel hands out pages
+		 * that do not exist. Only ever set this when the memory is really
+		 * there -- under PCSX2 that means ExtraMemory=true, which maps the
+		 * 128MB T10K devkit layout.
+		 *
+		 * Opt-in via FAKE_EXTRA_RAM in config.mk so a normal build cannot
+		 * carry it onto hardware by accident. */
+		bootpage.bootinfo.maxmem = FAKE_MAXMEM_MB * 1024 * 1024 - 4096;
+		kprintf("MEMORY: claiming %dMB (FAKE_MAXMEM_MB) -- needs real backing\n",
+			FAKE_MAXMEM_MB);
+#else
 		bootpage.bootinfo.maxmem = 32 * 1024 * 1024 - 4096;
+#endif
 	}
 
 	/* Bootpage will be later relocated to PS2_BOOTINFO_OLDADDR. */
