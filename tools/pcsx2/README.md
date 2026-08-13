@@ -30,9 +30,15 @@ part of it was broken, each fault hidden behind the previous one.
 Number 7 is the only one of these that is not about the MMU, and it is the one
 that kept a shell from running. It was found by elimination on hardware: the
 same kernel, initrd and bash binary that die under PCSX2 run correctly on a
-real console, which has a real BIOS and no HLE. PS2 software calls the BIOS
-from kernel mode, so the fix is to skip the emulation entirely when the syscall
-is taken in user mode and let the exception reach the guest.
+real console, which has a real BIOS and no HLE.
+
+The fix guards only the two handlers that write memory, on `v0` being in the
+Linux syscall range 4000-4999, which a BIOS call never sets. Two broader
+versions were tried first and both broke the boot, which is worth recording so
+they are not tried again: gating on processor mode fails because PS2 threads
+run in *user* mode -- that is precisely why a syscall interface exists -- and
+skipping the whole switch for Linux syscalls faults the SBIOS in
+`sbcall_cdvdinit`, so something in there is needed even when Linux is running.
 
 Numbers 2 and 5 are the same fault in two places: the vtlb records a page as
 either mapped or not, and both demand paging and copy-on-write need the states
