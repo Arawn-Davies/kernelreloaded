@@ -25,6 +25,14 @@ part of it was broken, each fault hidden behind the previous one.
 | 4 | `MapTLB`/`UnmapTLB` ignored the ASID | The vtlb is one flat space, so every process's mappings went in together and the last writer won — one process read another's pages. |
 | 6 | Address Error was detected but never raised | `RaiseAddressError()` printed a message and called `CancelInstruction()`, with a TODO admitting it "doesn't actually get raised in the CPU yet". The exception codes had always existed and nothing used them. |
 | 5 | Writes to a `D=0` page raised nothing | `MapTLB` mapped every page read-write regardless of `EntryLo.D`, and the vtlb has no read-only state, so **TLB Modified was an exception PCSX2 could never raise**. Copy-on-write depends on it entirely. |
+| 7 | `SYSCALL` emulated PS2 BIOS calls keyed on `v1` | Linux puts its syscall number in `v0` and treats `v1` as scratch, so **every Linux syscall ran an arbitrary BIOS handler**. `GetOsdConfigParam` and `GetOsdConfigParam2` write to the address in `a0`, and `SetGsCrt` changes video mode. bash calling `connect(3, ...)` had `a0` = the file descriptor, `3`, so four bytes went to address `0x00000003`. |
+
+Number 7 is the only one of these that is not about the MMU, and it is the one
+that kept a shell from running. It was found by elimination on hardware: the
+same kernel, initrd and bash binary that die under PCSX2 run correctly on a
+real console, which has a real BIOS and no HLE. PS2 software calls the BIOS
+from kernel mode, so the fix is to skip the emulation entirely when the syscall
+is taken in user mode and let the exception reach the guest.
 
 Numbers 2 and 5 are the same fault in two places: the vtlb records a page as
 either mapped or not, and both demand paging and copy-on-write need the states

@@ -65,8 +65,6 @@ static long sys5(long n, long a, long b, long c, long d, long e)
 #define sys_chdir(p)            sys(4012, (long)(p), 0, 0)
 #define sys_open(p, fl)         sys(4005, (long)(p), (long)(fl), 0)
 #define sys_close(fd)           sys(4006, (long)(fd), 0, 0)
-#define sys_socket(d, t, p)     sys(4183, (long)(d), (long)(t), (long)(p))
-#define sys_connect(fd, a, l)   sys(4170, (long)(fd), (long)(a), (long)(l))
 
 /* reboot(magic1, magic2, cmd, arg) -- four arguments, so it goes through the
  * five-argument helper with a harmless extra zero. */
@@ -344,61 +342,6 @@ static int take_tty(const char *dev)
 	return 1;
 }
 
-/* bash dies on a store to address 0x00000003, and the last thing it does
- * before that is socket(AF_UNIX, SOCK_DGRAM, 0) -- glibc's nscd client, reached
- * from the getpwuid() every shell does at startup. Reproduce that pair on its
- * own, in a child so a fault cannot take init down with it, so the failure can
- * be studied without 944KB of bash on top of it.
- */
-static void socket_probe(void)
-{
-	long pid, status = 0;
-
-	pid = sys_fork();
-	if (pid < 0)
-		return;
-
-	if (pid == 0) {
-		static char buf[256];
-		long fd, r;
-		int i, off;
-
-		fd = sys_socket(1 /* AF_UNIX */, 2 /* SOCK_STREAM on MIPS */, 0);
-		puts_("probe: socket(AF_UNIX, 2, 0) = ");
-		putn(fd);
-		puts_("\n");
-		if (fd < 0)
-			sys_exit(0);
-
-		/* glibc copies the sockaddr into an unaligned stack slot with
-		 * swl/swr and hands connect() that odd address. An aligned
-		 * buffer is not the same test, so walk the alignments. */
-		for (off = 0; off < 4; off++) {
-			char *addr = &buf[off];
-
-			for (i = 0; i < 120; i++)
-				addr[i] = 0;
-			addr[0] = 1;    /* sun_family, little endian */
-			copy2(&addr[2], "/var/run/nscd/socket", "", 108);
-
-			puts_("probe: connect at align+");
-			putn(off);
-			puts_(" = ");
-			r = sys_connect((int)fd, addr, 110);
-			putn(r);
-			puts_("\n");
-		}
-		sys_exit(0);
-	}
-
-	sys_wait4(pid, &status);
-	if (status & 0x7f) {
-		puts_("probe: killed by signal ");
-		putn(status & 0x7f);
-		puts_(" -- reproduced without bash\n");
-	}
-}
-
 /* Hand the console to bash, and take it back if bash will not stay.
  *
  * The point of minish was always to prove the primitives, not to be the shell.
@@ -427,57 +370,6 @@ static void run_bash(void)
 		sys_execve("/bin/bash", av, ev);
 		sys_execve("/bin/sh", av, ev);
 		sys_exit(127);
-	}
-
-	/* Dump the child's mappings while it still has some. When bash dies on
-	 * a fault the kernel reports only a bare address; without the library
-	 * load addresses there is no way to turn an epc into a function. */
-	{
-		static char path[64];
-		static char buf[4096];
-		static char last[4096];
-		static long last_len;
-		struct { long sec, nsec; } ts;
-		long fd, n;
-		int i, tries;
-
-		{
-			char num[12];
-			long v = pid;
-
-			i = sizeof(num);
-			num[--i] = 0;
-			do {
-				num[--i] = '0' + (int)(v % 10);
-				v /= 10;
-			} while (v);
-			copy2(path, "/proc/", &num[i], sizeof(path));
-			copy2(path, path, "/maps", sizeof(path));
-		}
-
-		/* Poll instead of sleeping once and hoping: bash dies about two
-		 * tenths of a second in, and a zombie has no mappings left to
-		 * read. Keep the most recent non-empty snapshot. */
-		for (tries = 0; tries < 40; tries++) {
-			fd = sys_open(path, 0 /* O_RDONLY */);
-			if (fd >= 0) {
-				n = sys_read((int)fd, buf, sizeof(buf) - 1);
-				sys_close((int)fd);
-				if (n > last_len) {
-					for (i = 0; i < n; i++)
-						last[i] = buf[i];
-					last_len = n;
-				}
-			}
-			ts.sec = 0;
-			ts.nsec = 10000000;   /* 10 ms */
-			sys_nanosleep(&ts, 0);
-		}
-
-		if (last_len > 0) {
-			puts_("\nminish: maps for bash\n");
-			sys_write(out_fd, last, last_len);
-		}
 	}
 
 	sys_wait4(pid, &status);
@@ -528,7 +420,6 @@ void __start(void)
 		puts_("\nminish: using /dev/ttyS0 (romcons/SIO)\n");
 
 	puts_("minish: no libc, PS2 Linux\n");
-	socket_probe();
 	run_bash();
 	shell();
 	sys_exit(0);
