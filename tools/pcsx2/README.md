@@ -18,6 +18,32 @@ kernelloader; it is all R5900 behaviour PCSX2 had wrong, and every fix was
 confirmed against a real console, where the same kernel, initrd and bash binary
 behave correctly without any of it.
 
+## Building it on Windows
+
+`build-windows.ps1` reproduces all of this on native Windows with MSVC, which
+answers the two fair objections to work done entirely under WSL2: that it might
+be a Linux-only artefact, and that WSL2 puts a layer of virtualisation between
+the emulator and the host.
+
+```powershell
+.\build-windows.ps1 -InstallPrereqs     # first run; UAC prompt for the toolchain
+.\build-windows.ps1                      # after a new shell picks up PATH
+.\build-windows.ps1 -SkipDeps            # later runs, once deps\ exists
+```
+
+Defaults to `D:\ps2dev` and needs ~25GB, nearly all of it the Qt/FFmpeg
+dependency tree rather than PCSX2. It clones the pinned commit the patches were
+cut against, applies them in dependency order, builds deps, then configures with
+the same flags `windows_build_qt.yml` uses so the result matches CI rather than
+being a one-off configuration.
+
+Two things it takes care of that are easy to get wrong. It clones with
+`core.autocrlf=false`, because Git for Windows otherwise rewrites the tree to
+CRLF and every LF patch then fails on line endings alone -- the same class of
+problem that stops gcc 2.95 compiling CRLF sources. And it checks for 7-Zip and
+Git's `usr\bin\patch.exe` up front, because `build-dependencies.bat` hardcodes
+both paths with no search and would otherwise fail an hour into the build.
+
 ## What is a fix and what is a probe
 
 The patch is the working set, so it contains both. If any of it is ever
