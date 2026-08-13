@@ -72,13 +72,58 @@ int ps2dev9_init()
 	int res = 1;
 	u16 dev9hw;
 
+	/* DEV9PROBE: the EE reaches DEV9 through two entirely separate windows, and
+	 * they fail independently, so probe both before concluding anything.
+	 *
+	 *   0xbf801460..146e  the DEV9 control registers, on the IOP I/O bus
+	 *   0xb4000000..      the SPEED chip and the ATA registers behind it, which
+	 *                     is what Linux's own ps2ide.c drives (PS2_HDD_BASE is
+	 *                     0xb4000040)
+	 *
+	 * 0xbf801100 is an IOP counter and has nothing to do with DEV9: it is read
+	 * twice purely to prove whether EE reads reach IOP hardware at all. If it
+	 * is 0 both times, the whole window is dead and the DEV9 result means
+	 * nothing; if it changes, the window works and DEV9 is the odd one out. */
+	{
+		volatile u16 *iopcnt = (volatile u16 *) 0xbf801100;
+		volatile u16 *dev9 = (volatile u16 *) 0xbf801460;
+		volatile u16 *spd = (volatile u16 *) 0xb4000000;
+		u16 c1, c2;
+
+		c1 = *iopcnt;
+		c2 = *iopcnt;
+		M_PRINTF("DEV9PROBE: iop cnt0 0x%04x then 0x%04x (window %s)\n",
+			(unsigned int) c1, (unsigned int) c2,
+			(c1 != c2) ? "LIVE" : "suspect");
+		M_PRINTF("DEV9PROBE: dev9 1460=%04x 1462=%04x 1464=%04x 146c=%04x 146e=%04x\n",
+			(unsigned int) dev9[0], (unsigned int) dev9[1],
+			(unsigned int) dev9[2], (unsigned int) dev9[6],
+			(unsigned int) dev9[7]);
+		M_PRINTF("DEV9PROBE: spd  rev=%04x rev1=%04x rev3=%04x ata_status=%04x\n",
+			(unsigned int) spd[0], (unsigned int) spd[1],
+			(unsigned int) spd[2],
+			(unsigned int) *(volatile u16 *) 0xb400004e);
+	}
+
 	dev9hw = DEV9_REG(DEV9_R_REV) & 0xf0;
+	/* DEV9PROBE: what the DEV9 revision register answers decides whether Linux
+	 * is told the HDD exists at all -- see loader.c's pccard_type. Print the
+	 * raw value: 0x20 is a CXD9566 PCMCIA card, 0x30 a CXD9611 expansion bay
+	 * (the Network Adapter, which is what both the retail Linux kit and
+	 * BlackRhino target), and anything else means the read did not reach real
+	 * DEV9 hardware. */
+	M_PRINTF("DEV9PROBE: reg 0x146e = 0x%04x, hw = 0x%02x\n",
+		(unsigned int) DEV9_REG(DEV9_R_REV), (unsigned int) dev9hw);
 	if (dev9hw == 0x20) {		/* CXD9566 (PCMCIA) */
 		dev9type = 0;
 		res = pcmcia_init();
+		M_PRINTF("DEV9PROBE: pcmcia_init -> %d\n", res);
 	} else if (dev9hw == 0x30) {	/* CXD9611 (Expansion Bay) */
 		dev9type = 1;
 		res = expbay_init();
+		M_PRINTF("DEV9PROBE: expbay_init -> %d\n", res);
+	} else {
+		M_PRINTF("DEV9PROBE: unrecognised DEV9 revision, no init attempted\n");
 	}
 
 	if (res)
