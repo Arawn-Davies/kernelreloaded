@@ -89,8 +89,34 @@ if (Test-Path $vswhere) {
         -property installationPath 2>$null
 }
 
+# Distinguish "no Visual Studio at all" from "Visual Studio without the C++
+# workload". They look identical to a -requires query -- both return nothing --
+# but the fixes differ, and installing Build Tools alongside an existing
+# Community install is a wasteful way to discover that. The symptom of getting
+# this wrong is build-dependencies.bat dying on
+#   '"...\VC\Auxiliary\Build\vcvars64.bat"' is not recognized
+# because VC\Auxiliary\Build only exists once the workload is installed.
+$anyVs = $null
+if (Test-Path $vswhere) {
+    $anyVs = & $vswhere -latest -products * -property installationPath 2>$null | Select-Object -First 1
+}
+
 $missing = @()
-if (-not $vsPath) { $missing += 'Microsoft.VisualStudio.2022.BuildTools' }
+$needWorkload = $false
+if (-not $vsPath) {
+    if ($anyVs) {
+        $needWorkload = $true
+        Write-Host "`nVisual Studio is installed at:" -ForegroundColor Yellow
+        Write-Host "  $anyVs"
+        Write-Host "but without the C++ workload, so there is no vcvars64.bat." -ForegroundColor Yellow
+        Write-Host "`nAdd it (this also brings CMake and Ninja):" -ForegroundColor Yellow
+        Write-Host "  & `"`${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe`" modify ``"
+        Write-Host "      --installPath `"$anyVs`" ``"
+        Write-Host "      --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --quiet --norestart"
+        Die "C++ workload missing. Add it, reopen the shell, and re-run."
+    }
+    $missing += 'Microsoft.VisualStudio.2022.BuildTools'
+}
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $missing += 'Git.Git' }
 # build-dependencies.bat hardcodes these two paths; it does not search.
 if (-not (Test-Path "C:\Program Files\7-Zip\7z.exe")) { $missing += '7zip.7zip' }
