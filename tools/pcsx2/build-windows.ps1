@@ -180,10 +180,40 @@ if (-not (Test-Path $src)) {
     Pop-Location
 }
 else {
-    Note "already present, reusing: $src"
+    Note "already present: $src"
     Push-Location $src
-    $head = (git rev-parse --short HEAD).Trim()
-    Note "HEAD is $head"
+
+    # An existing clone cannot be trusted to be in the state the patches expect.
+    # Two things go wrong, and both surface as "patch does not apply", which
+    # sends you looking at the patch rather than the tree.
+    #
+    #   1. It is on master. Upstream has moved a long way past the pinned
+    #      commit, so context lines no longer match.
+    #   2. It is CRLF. Git for Windows defaults to core.autocrlf=true, and a
+    #      tree checked out that way rejects an LF patch on line endings alone.
+    $head = (git rev-parse HEAD).Trim()
+    $want = (git rev-parse "$Commit^{commit}" 2>$null)
+    if (-not $want) {
+        git fetch --all --tags 2>$null | Out-Null
+        $want = (git rev-parse "$Commit^{commit}" 2>$null)
+    }
+    if ($want -and $head -ne $want.Trim()) {
+        Note "HEAD is $($head.Substring(0,9)), expected $Commit -- checking out"
+        git -c advice.detachedHead=false -c core.autocrlf=false checkout -f $Commit
+        if ($LASTEXITCODE -ne 0) { Die "could not check out $Commit" }
+    }
+
+    $crlf = (git config --get core.autocrlf)
+    if ($crlf -and $crlf -ne 'false') {
+        Note "core.autocrlf is '$crlf' -- this tree is CRLF and will reject the patches"
+        Note "renormalising to LF (git will re-checkout every file)"
+        git config core.autocrlf false
+        git config core.eol lf
+        git rm --cached -r -q . 2>$null | Out-Null
+        git reset --hard -q
+        if ($LASTEXITCODE -ne 0) { Die "renormalise failed; delete $src and re-run for a clean clone" }
+    }
+    Note "HEAD is $((git rev-parse --short HEAD).Trim()), autocrlf=$((git config --get core.autocrlf))"
     Pop-Location
 }
 
