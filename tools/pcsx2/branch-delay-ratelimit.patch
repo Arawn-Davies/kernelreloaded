@@ -1,0 +1,30 @@
+Rate-limit the "branch delay!!" warning.
+
+PR SCOPE: OUT. Log noise only, no behaviour change.
+
+Requires: ee-tlb-fixes.patch  (it also touches R5900.cpp)
+
+Taking an exception in a branch delay slot is rare for games, so cpuException()
+logs every one. A demand-paged OS faults constantly and a fair share of those
+land in delay slots: one BlackRhino boot emitted 28,942 of these, about 11% of
+the log.
+
+Rate-limited to 50 rather than silenced, so the diagnostic survives for the
+games it was meant for. Same spamStop idiom ee-tlb-fixes.patch already uses in
+RaiseAddressError.
+
+--- a/pcsx2/R5900.cpp
++++ b/pcsx2/R5900.cpp
+@@ -206,7 +206,11 @@
+ 		cpuRegs.CP0.n.Status.b.EXL = 1;
+ 		if (bd)
+ 		{
+-			Console.Warning("branch delay!!");
++			// Rate-limited: an exception in a delay slot is rare for games but
++			// routine for a demand-paged OS, where it floods the log.
++			static int s_bdSpamStop = 0;
++			if (s_bdSpamStop++ < 50 || IsDevBuild)
++				Console.Warning("branch delay!! (%d)", s_bdSpamStop);
+ 			cpuRegs.CP0.n.EPC = cpuRegs.pc - 4;
+ 			cpuRegs.CP0.n.Cause |= 0x80000000;
+ 		}

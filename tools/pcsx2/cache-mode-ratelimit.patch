@@ -1,0 +1,33 @@
+Rate-limit the "Cache mode %x not implemented" warning.
+
+PR SCOPE: OUT. Log noise only, no behaviour change.
+
+Applies to a clean tree; independent of the other patches.
+
+Games barely touch the EE cache instruction, so Cache.cpp logs every unhandled
+mode. A real OS does cache maintenance on every context switch and for DMA
+coherency: one BlackRhino boot emitted 251,370 of these -- 95% of the entire
+log, which came to 268,116 lines. With this and the branch-delay limit, the same
+boot logs 14,537.
+
+Rate-limited to 50 rather than silenced, so the first occurrences still report
+which modes are missing.
+
+--- a/pcsx2/Cache.cpp
++++ b/pcsx2/Cache.cpp
+@@ -501,8 +501,14 @@
+ 					}
+ 
+ 					default:
+-						DevCon.Warning("Cache mode %x not implemented", _Rt_);
++					{
++						// Rate-limited: rare for games, constant under a real
++						// OS doing cache maintenance.
++						static int s_cacheSpamStop = 0;
++						if (s_cacheSpamStop++ < 50)
++							DevCon.Warning("Cache mode %x not implemented (%d)", _Rt_, s_cacheSpamStop);
+ 						break;
++					}
+ 				}
+ 			}
+ 		} // end namespace OpcodeImpl

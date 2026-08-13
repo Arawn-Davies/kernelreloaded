@@ -1,0 +1,91 @@
+Gate the per-access EE-side DEV9 log behind PCSX2_DEV9_TRACE.
+
+PR SCOPE: OUT. Log noise only, no behaviour change. Not needed to run Linux;
+kept here because it makes a boot fast enough to work with.
+
+Requires: ee-tlb-fixes.patch  (it also touches Memory.cpp)
+
+Memory.cpp logs every EE-side DEV9 read and write with Console.WriteLn. Games
+never reach DEV9 from the EE, so this is normally silent. PS2 Linux drives the
+ATA data register from the EE at 256 words per sector: a single boot emitted
+over 100,000 lines, slow enough to dominate run time.
+
+Deleting the logging would remove the evidence -- it is what proved the EE
+window reaches DEV9 correctly, address translation included -- so it is made
+switchable instead. Off by default; PCSX2_DEV9_TRACE=1 restores it.
+
+--- a/pcsx2/Memory.cpp
++++ b/pcsx2/Memory.cpp
+@@ -43,6 +43,12 @@
+ #include "Cache.h"
+ #endif
+ 
++// EE-side DEV9 accesses are logged one line per access below. Games never reach
++// DEV9 from the EE, so this is normally silent -- but PS2 Linux drives the ATA
++// PIO data register from the EE, 256 words per sector, which floods the log and
++// dominates run time. Off by default; set PCSX2_DEV9_TRACE=1 to get it back.
++static const bool s_dev9Trace = (std::getenv("PCSX2_DEV9_TRACE") != nullptr);
++
+ namespace Ps2MemSize
+ {
+ 	u32 ExposedRam = MainRam;
+@@ -590,7 +596,8 @@
+ 		case 7: // dev9
+ 		{
+ 			mem8_t retval = DEV9read8(mem & ~0xa4000000);
+-			Console.WriteLn("DEV9 read8 %8.8lx: %2.2lx", mem & ~0xa4000000, retval);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 read8 %8.8lx: %2.2lx", mem & ~0xa4000000, retval);
+ 			return retval;
+ 		}
+ 		case 9:
+@@ -620,7 +627,8 @@
+ 		case 7: // dev9
+ 		{
+ 			mem16_t retval = DEV9read16(mem & ~0xa4000000);
+-			Console.WriteLn("DEV9 read16 %8.8lx: %4.4lx", mem & ~0xa4000000, retval);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 read16 %8.8lx: %4.4lx", mem & ~0xa4000000, retval);
+ 			return retval;
+ 		}
+ 
+@@ -646,7 +654,8 @@
+ 		case 7: // dev9
+ 		{
+ 			mem32_t retval = DEV9read32(mem & ~0xa4000000);
+-			Console.WriteLn("DEV9 read32 %8.8lx: %8.8lx", mem & ~0xa4000000, retval);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 read32 %8.8lx: %8.8lx", mem & ~0xa4000000, retval);
+ 			return retval;
+ 		}
+ 		case 9:
+@@ -717,7 +726,8 @@
+ 			gsWrite8(mem, value); return;
+ 		case 7: // dev9
+ 			DEV9write8(mem & ~0xa4000000, value);
+-			Console.WriteLn("DEV9 write8 %8.8lx: %2.2lx", mem & ~0xa4000000, value);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 write8 %8.8lx: %2.2lx", mem & ~0xa4000000, value);
+ 			return;
+ 		case 9:
+ 			iopMemWrite8(mem & ~0x1c000000, value);
+@@ -741,7 +751,8 @@
+ 			gsWrite16(mem, value); return;
+ 		case 7: // dev9
+ 			DEV9write16(mem & ~0xa4000000, value);
+-			Console.WriteLn("DEV9 write16 %8.8lx: %4.4lx", mem & ~0xa4000000, value);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 write16 %8.8lx: %4.4lx", mem & ~0xa4000000, value);
+ 			return;
+ 		case 8: // spu2
+ 			SPU2write(mem, value); return;
+@@ -762,7 +773,8 @@
+ 			gsWrite32(mem, value); return;
+ 		case 7: // dev9
+ 			DEV9write32(mem & ~0xa4000000, value);
+-			Console.WriteLn("DEV9 write32 %8.8lx: %8.8lx", mem & ~0xa4000000, value);
++			if (s_dev9Trace)
++				Console.WriteLn("DEV9 write32 %8.8lx: %8.8lx", mem & ~0xa4000000, value);
+ 			return;
+ 		case 9:
+ 			iopMemWrite32(mem & ~0x1c000000, value);
