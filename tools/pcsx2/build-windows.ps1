@@ -165,13 +165,35 @@ if (-not (Test-Path $batVcvars)) {
     Write-Host "`nbuild-dependencies.bat will select this VS2022 install:" -ForegroundColor Yellow
     Write-Host "  $batVs"
     Write-Host "and it has no vcvars64.bat, so the C++ workload is not installed there." -ForegroundColor Yellow
-    Write-Host "`nAdd it:" -ForegroundColor Yellow
-    Write-Host "  & `"`${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe`" modify ``"
-    Write-Host "      --installPath `"$batVs`" ``"
-    Write-Host "      --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --quiet --norestart"
-    Write-Host "`nThen confirm the file exists before re-running:" -ForegroundColor Yellow
-    Write-Host "  Test-Path `"$batVcvars`""
-    Die "C++ workload missing from the install build-dependencies.bat uses."
+
+    $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+    if ($InstallPrereqs -and (Test-Path $vsInstaller)) {
+        # Run it rather than print it. Over RDP the clipboard is often
+        # unavailable, and retyping an installer invocation by hand is how
+        # typos become an hour of confusion.
+        #
+        # Deliberately NOT --quiet: this is a multi-GB download, and silence is
+        # indistinguishable from a hang. --wait so we do not race the installer.
+        Say "adding the C++ workload to $batVs"
+        Note "Several GB. The installer window shows progress; this waits for it."
+        & $vsInstaller modify --installPath $batVs `
+            --add Microsoft.VisualStudio.Workload.NativeDesktop `
+            --includeRecommended --norestart --wait
+        Note "installer exit code: $LASTEXITCODE"
+
+        if (Test-Path $batVcvars) {
+            Note "vcvars64.bat is now present"
+        }
+        else {
+            Die "still no vcvars64.bat at $batVcvars -- the workload did not install. Check the Visual Studio Installer window for an error."
+        }
+    }
+    else {
+        Write-Host "`nRe-run with -InstallPrereqs and this script will add it for you," -ForegroundColor Yellow
+        Write-Host "or do it by hand:" -ForegroundColor Yellow
+        Write-Host "  & `"$vsInstaller`" modify --installPath `"$batVs`" --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended --norestart"
+        Die "C++ workload missing from the install build-dependencies.bat uses."
+    }
 }
 
 $vcvars = $batVcvars
