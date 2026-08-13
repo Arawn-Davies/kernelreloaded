@@ -140,3 +140,7 @@ loader/title.png
 # replaced vmlinux.gz here before.
 [Vv][Mm][Ll][Ii][Nn][Uu][Xx]*.gz
 [Ii][Nn][Ii][Tt][Rr][Dd]*.gz
+
+# Downloaded BlackRhino Live DVD and the DISC.BIN extracted from it. Fetched by
+# tools/get-blackrhino-disc.sh; large, and not ours to redistribute.
+dist/blackrhino-live/
