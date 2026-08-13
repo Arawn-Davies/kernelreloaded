@@ -48,3 +48,27 @@ process is still alive; a panic means it ran to completion.
 Note `argv[0]` is `"init"` for whatever the kernel execs, so error messages come
 out prefixed `init:` regardless of which binary is running. `init: write error`
 from `ls` is `ls` failing to write, not init.
+
+## What the address `0x3` turned out to be
+
+Not a kernel fault, and nothing these tests could have reproduced: PCSX2 was
+writing to it.
+
+Its `SYSCALL` opcode emulates PS2 BIOS syscalls keyed on `v1`. Linux puts its
+syscall number in `v0` and treats `v1` as scratch, so every Linux syscall
+selected an arbitrary BIOS handler, and two of them -- `GetOsdConfigParam` and
+`GetOsdConfigParam2` -- write to the address held in `a0`. bash called
+`connect(3, ...)` during the `getpwuid()` every shell does at startup. `a0` was
+the file descriptor, `3`. Four bytes went to address `0x00000003` and the
+kernel killed it, reporting the fault at a `syscall` instruction, which
+performs no store.
+
+That last detail is why the tests could not find it. Every structural theory
+they ruled out was ruled out correctly; the reported fault site was simply not
+where the write came from. Two further theories died the same way afterwards --
+the socket path is fine, returning `-2` at every one of the four pointer
+alignments, and so is the unaligned `sockaddr` glibc builds with `swl`/`swr`.
+
+The lesson worth keeping is the one these tests were built on: a symptom
+reported at an instruction that cannot produce it means the report is wrong,
+not the instruction. See `tools/pcsx2/README.md` bug 7.

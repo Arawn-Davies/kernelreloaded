@@ -183,9 +183,17 @@ stick via wLaunchELF: kernelloader built on gcc 15 hands off to a 2001
 MontaVista 2.4.17 kernel, the initrd unpacks, USB enumerates as a SCSI device,
 and userspace comes up at a prompt.
 
-Under PCSX2 (v2.6.3) it gets as far as `Freeing initrd memory` and then faults
-in the EE MMU — the least-exercised path in the emulator and the first thing
-Linux leans on. That is an emulator limit, not a loader one.
+**And under PCSX2**, once the emulator is fixed. Stock PCSX2 gets as far as
+`Freeing unused kernel memory` and stops dead — the EE MMU is the
+least-exercised path in the emulator and the first thing Linux leans on. Seven
+emulator bugs later it reaches a shell too; the patches, the reasoning and a
+one-command red/green demonstration are in
+[`tools/pcsx2/`](tools/pcsx2/README.md).
+
+The kernel is now built from source rather than taken prebuilt — see
+[`phase1/`](phase1/README.md) — which is what made the last of those bugs
+findable, and turned up two in the PS2 Linux kernel itself: the ROM console tty
+had no receive path at all, so every shell read EOF and exited without a word.
 
 Getting there turned up faults that had nothing to do with the four
 originally-documented blockers, and two that would have shipped a broken ELF
