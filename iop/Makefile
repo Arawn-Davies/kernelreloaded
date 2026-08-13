@@ -1,4 +1,4 @@
-SUBDIRS = SMSUTILS SMSCDVD eromdrvloader
+SUBDIRS = sharedmem smaprpc dev9init SMSUTILS SMSCDVD eromdrvloader
 
 all:
 	for dir in $(SUBDIRS); do \

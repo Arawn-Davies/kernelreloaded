@@ -55,7 +55,7 @@ EE_LIBS += -lz
 EE_FLAGS += $(shell if [ -e "$(PS2LINUXDVD)/pbpx_955.09" ]; then echo -DRTE; fi)
 
 EE_FLAGS += -I$(PS2SDK)/ports/include
-EE_FLAGS += -I../crc32gen/
+EE_FLAGS += -I../tools/crc32gen/
 # -Werror dropped for the modern-toolchain port. Combined with -W (-Wextra) it
 # fails inside ps2sdk's OWN headers: rom0_info.h and osd_config.h trip
 # -Wunused-parameter about 20 times before any kernelloader source is reached.
@@ -178,7 +178,7 @@ ROM_FILES += $(shell if [ -e "$(PS2LINUXDVD)/pbpx_955.09" ]; then echo $(RTE_FIL
 all: $(PACKEDFILE)
 
 $(PACKEDFILE): $(EE_BIN)
-	../crc32gen/crc32gen $^
+	../tools/crc32gen/crc32gen $^
 	ps2-packer $^ $@
 
 $(MODULES):
@@ -259,11 +259,11 @@ rominitialize.h: $(RGB_FILES)
 	sed -e "s/\.data/.section .rom/g" <$@.tmp >$@
 	rm -f $@.tmp
 
-%.rgb %.h: %.ppm ../ppm2rgb/ppm2rgb
-	../ppm2rgb/ppm2rgb $*.ppm $*.rgb $*.h $*
+%.rgb %.h: %.ppm ../tools/ppm2rgb/ppm2rgb
+	../tools/ppm2rgb/ppm2rgb $*.ppm $*.rgb $*.h $*
 
-%.rgb %.h: %.png ../png2rgb/png2rgb
-	../png2rgb/png2rgb $*.png $*.rgb $*.h $*
+%.rgb %.h: %.png ../tools/png2rgb/png2rgb
+	../tools/png2rgb/png2rgb $*.png $*.rgb $*.h $*
 
 %_bmp.s: %.bmp
 	rm -f $@.tmp
@@ -295,15 +295,15 @@ rominitialize.h: $(RGB_FILES)
 	sed -e "s/\.data/.section .rom/g" <$@.tmp >$@
 	rm -f $@.tmp
 
-mcicons/%.icn: ../mcicons/%.icn
+mcicons/%.icn: ../assets/mcicons/%.icn
 	mkdir -p mcicons
 	cp $^ $@
 
-mcicons/%.sys: ../mcicons/%.sys
+mcicons/%.sys: ../assets/mcicons/%.sys
 	mkdir -p mcicons
 	cp $^ $@
 
-mcicons/%.bmp: ../mcicons/%.bmp
+mcicons/%.bmp: ../assets/mcicons/%.bmp
 	mkdir -p mcicons
 	cp $^ $@
 

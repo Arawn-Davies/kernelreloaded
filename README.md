@@ -114,6 +114,28 @@ in the global namespace. Without it, `loader/` cannot link.
 Pleasingly, citronalco is also the author of the 2010 ps2dev.org thread on
 booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 
+## Layout
+
+The kernelloader source *is* this repo — no submodule, no wrapper directory, so
+`make` at the root just works and there is exactly one source tree.
+
+| Path | What it is |
+|---|---|
+| `loader/` | the loader itself — UI, config, file browsers → `kloader.elf` |
+| `kernel/` | EE kernel **stub** (`kernel.elf`). Not Linux |
+| `TGE/` | the SBIOS Linux calls for all I/O; `TGE/iop/intrelay/` builds the intrelay IRXs |
+| `RTE/` | Sony's SBIOS, built only when the Linux Kit disc is mounted |
+| `iop/` | the six IOP modules — `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader` |
+| `linux/` | everything about the **guest OS**: upstream's `patches/`, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
+| `tools/` | host-side helpers — `crc32gen`, `png2rgb`, `ppm2rgb`, `bin2s`, the `pcsx2/` patches, deploy scripts |
+| `assets/` | shipped artwork; `assets/src/` holds unshipped sources |
+| `docs/` | the documents above; `docs/upstream/` keeps upstream's own `readme.txt` and friends |
+
+Those first four stay at the root because everything else installs *into*
+`loader/` — the SBIOS, the kernel stub and every IOP module all copy their
+output there, so moving it down a level would buy tidiness at the cost of
+fifteen install paths.
+
 ## Build
 
 Requires Docker. Nothing else — the toolchain lives in the image.
@@ -153,8 +175,7 @@ needed is being ignored, clean the source directories and rebuild (naming them
 explicitly, so `dist/` survives):
 
 ```bash
-git clean -Xdf kernel TGE loader modules sharedmem smaprpc \
-               dev9init crc32gen png2rgb ppm2rgb hello RTE && ./build.sh
+git clean -Xdf kernel TGE RTE loader iop tools && ./build.sh
 ```
 
 ## What the environment provides
@@ -191,7 +212,7 @@ one-command red/green demonstration are in
 [`tools/pcsx2/`](tools/pcsx2/README.md).
 
 The kernel is now built from source rather than taken prebuilt — see
-[`phase1/`](phase1/README.md) — which is what made the last of those bugs
+[`linux/phase1/`](linux/phase1/README.md) — which is what made the last of those bugs
 findable, and turned up two in the PS2 Linux kernel itself: the ROM console tty
 had no receive path at all, so every shell read EOF and exited without a word.
 

@@ -6,7 +6,7 @@ while porting it. Everything here is from the tree at `ce0fb430`
 SourceForge 3.0 release — that release's `kloader3.0.elf` is md5
 `3dda261f366a10570529a7ff4d7c5779`).
 
-The upstream `readme.txt` covers usage. This covers structure, because that is
+Upstream's `docs/upstream/readme.txt` covers usage. This covers structure, because that is
 what you need before changing anything.
 
 ---
@@ -279,8 +279,8 @@ flowchart LR
         RTE["RTE/<br/><i>skipped unless the Sony<br/>Linux Kit disc is present</i>"]
     end
     subgraph IOPS["IOP modules"]
-        SHM["sharedmem/"]
-        MODS["modules/"]
+        SHM["iop/sharedmem"]
+        MODS["iop/ (all six modules)"]
     end
     CRC["crc32gen"]
     LOADER["<b>loader/</b><br/>kloader.elf"]
@@ -306,14 +306,14 @@ The top-level `Makefile` builds, in order:
 
 | Directory | Produces | Notes |
 |---|---|---|
-| `ppm2rgb`, `png2rgb` | host binaries | convert image assets at build time |
-| `hello` | `hello.elf` | example payload, referenced by `EXAMPLE_ELF` |
+| `tools/ppm2rgb`, `tools/png2rgb` | host binaries | convert image assets at build time |
+| `tools/hello` | `hello.elf` | example payload, referenced by `EXAMPLE_ELF` |
 | `kernel` | `kernel.elf` → `loader/` | EE kernel stub |
-| `sharedmem` | IOP module | shared-memory debug channel |
+| `iop/sharedmem` | IOP module | shared-memory debug channel |
 | `TGE` | `sbios_old.elf`, `sbios_new.elf` → `loader/TGE/` | the SBIOS |
 | `RTE` | `sbios.elf` | **skipped** unless `$(PS2LINUXDVD)/pbpx_955.09` exists |
-| `modules` | IOP modules | SMSCDVD and friends |
-| `crc32gen` | host helper | |
+| `iop/` | IOP modules | SMSCDVD and friends |
+| `tools/crc32gen` | host helper | |
 | `loader` | `kloader.elf` | links everything above in as embedded blobs |
 
 `loader/` embeds the SBIOS ELFs, the kernel stub, IRX modules and image assets
@@ -346,14 +346,14 @@ Project-level switches, read by most sub-Makefiles:
 |---|---|
 | `PS2LINUXDVD` | path checked for `pbpx_955.09` to decide whether to build RTE |
 | `TARGET_IP` | ps2link target used during development |
-| `EXAMPLE_ELF` | payload embedded as the example (`../hello/hello.elf`) |
+| `EXAMPLE_ELF` | payload embedded as the example (`../tools/hello/hello.elf`) |
 | `DEBUG_OUTPUT_TYPE` | `sio`, `fileio` or `callback` — selects the debug channel |
 | `RESET_IOP` | reset the IOP at start |
 | `LOAD_PS2LINK` | load ps2link debug modules (only if the IOP is reset) |
 | `NEW_ROM_MODULES` | use new ROM modules in the loader |
 | `SCREENSHOT` | R1 writes a screenshot to `host:` or `mass0:` |
 | `SBIOS_DEBUG` | SBIOS debug output; forces `-Os` because debug code is larger |
-| `SHARED_MEM_DEBUG` | build and use the `sharedmem` IOP module |
+| `SHARED_MEM_DEBUG` | build and use the `iop/sharedmem` IOP module |
 | `NEW_KERNEL_TOOLCHAIN` | see below |
 
 ### NEW_KERNEL_TOOLCHAIN is not what it sounds like
@@ -380,7 +380,7 @@ had clearly hit the same issues from the other direction.
 
 ## Hardware notes worth knowing
 
-From upstream's `readme.txt`, and relevant when deciding where to put files:
+From upstream's `docs/upstream/readme.txt`, and relevant when deciding where to put files:
 
 - **USB is unstable on slim PSTwo v14 and higher.** Loading `vmlinux` from a
   memory card is safer than from `mass0:` on those consoles.

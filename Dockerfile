@@ -33,7 +33,7 @@ RUN for f in /usr/local/ps2dev/ee/bin/mips64r5900el-ps2-elf-*; do \
         ln -sf "$f" "/usr/local/bin/ee-${b#mips64r5900el-ps2-elf-}"; \
     done
 
-# IOP modules (sharedmem/, modules/) do:
+# IOP modules (all six under iop/) do:
 #     include $(PS2SDKSRC)/Defs.make
 #     include $(PS2SDKSRC)/iop/Rules.make
 #

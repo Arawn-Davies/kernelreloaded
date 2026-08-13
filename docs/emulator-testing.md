@@ -479,7 +479,7 @@ and was a wrong turn. A 2x2 settles which component is at fault:
 | 2012 | 2012 | stalls at `NET4:`, never finds the initrd |
 
 The kernel is the variable. Use the **2010** kernel for emulator work -- or the
-one `phase1/build-kernel.sh` builds, which is the same 2.4.17 source with the
+one `linux/phase1/build-kernel.sh` builds, which is the same 2.4.17 source with the
 ROM console fixed and is what everything since has used.
 
 ---

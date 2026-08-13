@@ -5,10 +5,10 @@ IOP_SRC_DIR  = ./
 IOP_BIN = sharedmem.irx
 IOP_OBJS = sharedmem.o imports.o
 IOP_LDFLAGS = -Wl,-s
-IOP_CFLAGS = -D_PS2_ -I../include
+IOP_CFLAGS = -D_PS2_ -I../../include
 
 install: all
-	cp $(IOP_BIN) ../loader
+	cp $(IOP_BIN) ../../loader
 
 all: $(IOP_BIN)
 

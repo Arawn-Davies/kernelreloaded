@@ -21,11 +21,11 @@ ifeq ($(DEBUG),1)
 DEBUG_FLAGS = -DDEBUG
 endif
 
-IOP_CFLAGS = -D_PS2_ -I../include -fno-builtin $(DEBUG_FLAGS)
+IOP_CFLAGS = -D_PS2_ -I../../include -fno-builtin $(DEBUG_FLAGS)
 IOP_LDFLAGS = -Wl,-s
 
 install: all
-	cp $(IOP_BIN) ../loader
+	cp $(IOP_BIN) ../../loader
 
 all: $(IOP_BIN)
 

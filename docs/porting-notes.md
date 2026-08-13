@@ -12,7 +12,7 @@ that arrangement is gone, but the patch's final form is still in history at
 
 ```mermaid
 flowchart LR
-    A["ppm2rgb<br/>png2rgb"] --> B["hello"] --> C["kernel/<br/>kernel.elf"] --> D["sharedmem/"] --> E["TGE/sbios<br/>sbios_old + new"] --> F["modules/"] --> G["crc32gen"] --> H["loader/<br/>kloader.elf"]
+    A["tools/ppm2rgb<br/>tools/png2rgb"] --> B["tools/hello"] --> C["kernel/<br/>kernel.elf"] --> D["iop/<br/>all six IOP modules"] --> E["TGE/sbios<br/>sbios_old + new"] --> F["tools/crc32gen"] --> G["loader/<br/>kloader.elf"]
 
     classDef done fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     classDef stuck fill:#f8cecc,stroke:#b85450,color:#1a1a1a
@@ -38,7 +38,7 @@ produced an ELF that looked entirely plausible. Those are collected under
 The ps2dev base image is minimal Alpine with the cross-toolchain only.
 `apk add make bash`.
 
-### `cc: No such file or directory` building `ppm2rgb`
+### `cc: No such file or directory` building `tools/ppm2rgb`
 
 kernelloader builds host programs too — `ppm2rgb` and `png2rgb` convert image
 assets at build time. `apk add gcc musl-dev`.
@@ -146,7 +146,7 @@ the same Makefile already set, for the same reason.
 
 ---
 
-## `sharedmem/` — an IOP module
+## `iop/sharedmem/` — an IOP module
 
 ### `/Defs.make: No such file or directory`
 
@@ -315,7 +315,7 @@ new module is larger and need to be optimized for size."*
 
 ---
 
-## `modules/` — cleared
+## `iop/` IOP modules — cleared
 
 ### `'packed' attribute ignored for field of type 'u8[8]'`
 
@@ -608,7 +608,7 @@ Restored from git history (`git show 4ba4d6e^:TGE/iop/intrelay/...`) and ported:
 - `Rules.make` no longer supplies rules creating `IOP_OBJS_DIR`/`IOP_BIN_DIR`,
   so `all` failed with "No rule to make target 'obj-direct/'". The four variants
   need separate object directories because each is built with different `-D`
-  flags, so they cannot build in place the way `modules/SMSCDVD` does.
+  flags, so they cannot build in place the way `iop/SMSCDVD` does.
 - `iop/Rules.make:85` now applies the object directory itself
   (`IOP_OBJS := $(IOP_OBJS:%=$(IOP_OBJS_DIR)%)`), so the Makefile's own
   `addprefix` produced `obj-direct/obj-direct/intrelay.o`.

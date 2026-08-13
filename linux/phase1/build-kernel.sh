@@ -20,7 +20,12 @@
 
 set -euo pipefail
 
-REPO="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+REPO="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# Everything this script reads out of the repo -- the patch set, the kernel
+# config and the three out-of-tree drivers -- lives under linux/, alongside
+# this script. REPO stays the repo root so the documented argument keeps
+# meaning what it always did.
+LINUX="$REPO/linux"
 PREFIX="${PHASE1:-/root/phase1}"
 TOOLS=/usr/local/ps2
 SF="https://sourceforge.net/projects/kernelloader/files"
@@ -66,15 +71,15 @@ if [ ! -d "$KSRC" ]; then
     msg "patching"
     cd "$KSRC"
     for p in all_fat_and_slim no-bwlinux-check nfsroot-via-tcp; do
-        patch -p1 -s <"$REPO/patches/linux-2.4.17_ps2-$p.patch"
+        patch -p1 -s <"$LINUX/patches/linux-2.4.17_ps2-$p.patch"
         echo "  applied $p"
     done
 
-    # Ours, not upstream's -- hence phase1/patches rather than patches/.
+    # Ours, not upstream's -- hence linux/phase1/patches rather than linux/patches/.
     # Without this the ROM console tty is write-only and every shell started
     # on it reads EOF and exits on the spot. See the patch header.
     for p in romcons-input; do
-        patch -p1 -s <"$REPO/phase1/patches/$p.patch"
+        patch -p1 -s <"$LINUX/phase1/patches/$p.patch"
         echo "  applied $p (ours)"
     done
 
@@ -89,9 +94,9 @@ if [ ! -d "$KSRC" ]; then
     # smaprpc is a genuine dependency: CONFIG_PS2_ETHER_SMAP=y builds
     # ps2smaprpc.o, which lists smaprpc.o among its objects.
     msg "adding out-of-tree drivers"
-    cp -r "$REPO/driver_ps2fs/ps2fs"     "$KSRC/fs/"
-    cp -r "$REPO/driver_unionfs/unionfs" "$KSRC/fs/"
-    cp "$REPO/driver_slim_smaprpc/smaprpc.c" "$REPO/driver_slim_smaprpc/smaprpc.h" \
+    cp -r "$LINUX/driver_ps2fs/ps2fs"     "$KSRC/fs/"
+    cp -r "$LINUX/driver_unionfs/unionfs" "$KSRC/fs/"
+    cp "$LINUX/driver_slim_smaprpc/smaprpc.c" "$LINUX/driver_slim_smaprpc/smaprpc.h" \
        "$KSRC/drivers/ps2/"
 fi
 
@@ -101,7 +106,7 @@ cd "$KSRC"
 # The repo's kernelconfig has CONFIG_PS2_SERIAL_CONSOLE=y, which builds
 # arch/mips/ps2/romcons.c -- the console that writes via sbios(SB_PUTCHAR) and
 # so reaches the PCSX2 log through TGE. Boot with "romcons" to register it.
-[ -f .config ] || cp "$REPO/kernelconfig" .config
+[ -f .config ] || cp "$LINUX/kernelconfig" .config
 
 # ARCH must be on the COMMAND LINE, not exported: 2.4's top-level Makefile does
 # "ARCH := $(shell uname -m ...)", and a makefile assignment beats the
