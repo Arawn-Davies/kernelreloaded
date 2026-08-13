@@ -78,6 +78,10 @@ EE_FLAGS += -I../tools/crc32gen/
 # worth revisiting once the loader runs -- see docs/porting-notes.md.
 EE_FLAGS += -DNEWLIB_PORT_AWARE
 
+ifneq ($(FAKE_EXTRA_RAM),)
+EE_FLAGS += -DFAKE_MAXMEM_MB=$(FAKE_EXTRA_RAM)
+endif
+
 EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
 
 # The -D_STLP_* defines, -Dwint_t=int and the stlport include path are all

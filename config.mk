@@ -65,3 +65,8 @@ else
 SIO_DEBUG = no
 endif
 
+# Tell Linux the console has more RAM than a retail PS2's 32MB. Emulation only:
+# the memory must actually exist, which under PCSX2 means ExtraMemory=true (the
+# 128MB T10K devkit map). Blank or unset for a normal build -- a real console
+# told it has more will hand out pages that are not there.
+FAKE_EXTRA_RAM = 64
