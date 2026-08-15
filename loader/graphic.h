@@ -42,6 +42,9 @@ int getCurrentMode(void);
 #ifdef __cplusplus
 extern "C" {
 #endif
+	/* Repaint from C. graphic_paint() itself is declared C++-side above, so
+	 * bootlog.c cannot reach it; this is the same call with C linkage. */
+	void graphic_repaint(void);
 	/* Which slice of the overall bar the current stage fills, as base and span
 	 * in percent. Set once per boot stage; graphic_setPercentage() maps each
 	 * loader's own 0..100 into it, so the bar fills once across the whole boot

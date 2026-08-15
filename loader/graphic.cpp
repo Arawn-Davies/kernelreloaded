@@ -967,6 +967,10 @@ extern "C" {
 	 * @param percentage Percentage to set (0 - 100).
 	 * @param name File name printed on screen.
 	 */
+	void graphic_repaint(void) {
+		graphic_paint();
+	}
+
 	void graphic_setLoadStage(int base, int span) {
 		stageBase = base;
 		stageSpan = span;
