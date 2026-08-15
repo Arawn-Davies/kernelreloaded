@@ -4,6 +4,8 @@
 
 #include "bootlog.h"
 
+#include "graphic.h"
+
 /* Wide enough for the longest line the loader actually prints -- the kernel
  * command line is the worst case and is clipped when drawn, not here. */
 #define BOOTLOG_COLS 128
@@ -22,6 +24,28 @@ static int count;
 static int partial;
 
 static int active;
+
+/* Repaint so the window shows what has just been logged.
+ *
+ * Without this the panel is only as fresh as the last graphic_paint(), which
+ * comes from the progress bar -- so any stage that reports no percentage, such
+ * as module loading, leaves the screen frozen on the previous stage's last
+ * line. A hang there then reads as a hang in the stage before it, which is
+ * exactly the wrong answer to the only question this window exists to answer.
+ *
+ * Once per completed line, not per character, and guarded against re-entry
+ * because graphic_paint() and everything it calls may kprintf(). */
+static int painting;
+
+static void repaint(void)
+{
+	if (!active || painting) {
+		return;
+	}
+	painting = 1;
+	graphic_repaint();
+	painting = 0;
+}
 
 static void startLine(void)
 {
@@ -80,6 +104,11 @@ void bootlogAppend(const char *text)
 		}
 		appendChar(*p);
 	}
+
+	/* Once per kprintf(), after the text is in the buffer -- not when the next
+	 * line starts. The line that matters most is the last one before a hang,
+	 * and that one has no successor to trigger the repaint. */
+	repaint();
 }
 
 void bootlogBegin(void)

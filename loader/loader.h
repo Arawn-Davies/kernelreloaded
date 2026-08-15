@@ -43,6 +43,13 @@ extern "C" {
 		int sound;
 		/** -1, if module needs network, 0 otherwise. */
 		int network;
+		/** 1, if the module needs DEV9. -1, if it needs DEV9 absent. 0, either.
+		 *
+		 * The interrupt relay comes in four builds spanning two independent
+		 * axes -- direct/dev9 is about whether DEV9 is present, rpc/non-rpc is
+		 * about slim vs fat -- but defaultmod only ever selected on the chassis
+		 * axis, so the DEV9 one went unrepresented. See the intrelay entries. */
+		int dev9;
 		/** True, if module is responsible eromdrv. */
 		int eromdrv;
 		/** 1, if debug mode. 0, load always. -1, no debug mode */
