@@ -134,11 +134,12 @@ The whole tree builds, and `./build.sh` produces a `kloader.elf` that boots
 Linux. The four original link blockers are long gone; see `docs/porting-notes.md`
 for what they were.
 
-What works, as of 2026-08-13:
+What works, as of 2026-08-16:
 
 - **PS2 Linux boots to an interactive shell**, on real hardware and under
-  PCSX2. On hardware `bash` runs as a login shell, sources `/etc/profile` and
-  gives coloured `ls`.
+  PCSX2. On hardware `bash` runs on the GS framebuffer console with a USB
+  keyboard, with the full shared library set — `ld.so.1`, `libc`, `libncurses`,
+  `libdl`. Confirmed on an SCPH-70003.
 - **Under PCSX2 it needs `tools/pcsx2/ee-tlb-fixes.patch`** — seven emulator
   bugs, six in the EE MMU and one in BIOS-syscall emulation. Stock PCSX2 stops
   dead at `Freeing unused kernel memory` in an endless TLB refill loop.
@@ -148,10 +149,49 @@ What works, as of 2026-08-13:
   the ROM console tty readable — without it every shell reads EOF and exits
   silently.
 - **Boot to a shell takes about 19 seconds** under emulation, down from 61.
+- **The loader shows its own log on screen** during the load, so a hang has a
+  named last line instead of a frozen picture. See "Debugging on hardware".
 
 Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel
 and initrd have to be loaded from `host:` or a card. See the end of
 `docs/emulator-testing.md` — including what was already tried and reverted.
+
+Open, unstarted: a mode change that the display cannot sync to leaves a black
+screen with no way back (`gsKit_init_screen()` is applied with no confirmation
+or timeout — it wants the monitor-style revert-after-N-seconds); exiting minish
+powers off rather than reboots, which upstream's `KNOWNPROBLEMS.txt` PR#26
+suggests predates us; and there is no DHCP, so the System Info panel's IP row
+shows `getMyIP()`'s 192.168.0.10 default rather than a real lease.
+
+## Debugging on hardware
+
+**Never read the DEV9 revision register from the EE on a slim PSTwo.** It hangs
+the console dead — not slowly, not returning nonsense — wherever in the boot it
+is done: cold, after `ps2dev9.irx` has started, or from the paint path. PCSX2
+answers 0 and carries on, so none of it is visible under emulation, and it was
+reached three separate ways before being understood. Upstream never does it on
+a slim either: `ps2dev9_init()` sits in the non-slim branch of `real_loader()`.
+That is the correct design, not an oversight — a slim has the adapter built in,
+so only a fat is ambiguous. `dev9Matches()` in `loader.c` carries the detail.
+
+`kprintf()` goes to SIO, which needs a hardware modification to read, so the
+loader draws its last 16 lines in a panel during the load (`loader/bootlog.c`).
+Two things about it are load-bearing. It repaints on every `kprintf()` rather
+than only when the progress bar moves — otherwise a stage that reports no
+percentage leaves the screen frozen on the previous stage's last line, and a
+hang reads as a hang in the stage before it. And it draws from primitives, not
+a texture, so it still works when what is broken is a texture upload.
+
+`tools/pcsx2/emu.sh` finds, stops and launches emulator instances. Use it
+rather than `pkill`: `comm` is truncated to 15 characters so `pkill -x` matches
+nothing while reporting success, `pkill -f` matches the caller's own command
+line and kills the shell, and one AppImage is two PIDs.
+
+Video on a component/HDMI adapter: `crtmode=dtv` with
+`video=ps2fb:dtv,720x480-32` is progressive and does not shimmer. The loader's
+own PAL default stays interlaced `GS_FIELD` because it must also serve
+composite — `GS_FRAME` reads the buffer at half vertical resolution and
+squashes the UI into the top half of the screen.
 
 ## Pretending to have more RAM
 
