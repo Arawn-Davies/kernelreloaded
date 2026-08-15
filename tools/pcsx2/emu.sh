@@ -74,13 +74,17 @@ emu_pids() {
 		cmd=$(cmdline_of "$pid")
 		case "$cmd" in *"$SELF_TAG"*) continue ;; esac
 
-		# argv OR the executable behind it. After the AppImage mounts its
-		# squashfs and re-execs, the surviving process's argv no longer
-		# contains the AppImage's name -- but /proc/<pid>/exe still points
-		# into /tmp/.mount_*, which does.
-		exe=$(readlink "$d/exe" 2>/dev/null || true)
-		[ -n "$cmd$exe" ] || continue
-		printf '%s %s' "$cmd" "$exe" | grep -Eq "$PATTERN" && echo "$pid"
+		# Match argv OR the binary path behind it.
+		#
+		# /proc/<pid>/exe is a symlink to the binary a process is running --
+		# nothing to do with Windows, despite the name. It matters because the
+		# AppImage mounts its squashfs under /tmp/.mount_* and re-execs, after
+		# which the surviving process's argv no longer contains the AppImage's
+		# filename, but its binary path still does. That is the process
+		# `pkill -f <appimage>` fails to find.
+		binpath=$(readlink "$d/exe" 2>/dev/null || true)
+		[ -n "$cmd$binpath" ] || continue
+		printf '%s %s' "$cmd" "$binpath" | grep -Eq "$PATTERN" && echo "$pid"
 	done
 	return 0
 }
