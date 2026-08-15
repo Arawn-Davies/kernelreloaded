@@ -1429,6 +1429,25 @@ moduleEntry_t *getModuleEntry(int idx)
 }
 
 
+/** True when the assembled kernel command line already carries this option.
+ *
+ * Matches at a token boundary only. A plain strstr() for "ip=" would also fire
+ * on "rd_ip=" or "noip=", and silently suppressing an option because it appears
+ * inside an unrelated one is the kind of bug that takes an afternoon. */
+static int hasCommandlineOption(const char *cmdline, const char *option)
+{
+	const char *p = cmdline;
+	const size_t len = strlen(option);
+
+	while ((p = strstr(p, option)) != NULL) {
+		if ((p == cmdline) || (p[-1] == ' ')) {
+			return 1;
+		}
+		p += len;
+	}
+	return 0;
+}
+
 /** True when a module's DEV9 requirement is met by the current configuration.
  *
  * This cannot be folded into the defaultmod selection in setDefaultConfiguration(),
@@ -2558,6 +2577,37 @@ static int real_loader(void)
 					}
 				}
 			}
+		}
+
+		/* Do not let the kernel hunt for a DHCP lease on a console with no
+		 * network device.
+		 *
+		 * The kernel is built with IP autoconfiguration, for NFS root, and that
+		 * runs whether or not an interface exists. With none it sends a full
+		 * round of DHCP requests, times out, reopens the devices and does it all
+		 * again -- about ninety seconds added to every boot, on a machine that
+		 * cannot possibly answer. It is the single largest cost in a ramdisk
+		 * boot on a console without the adapter.
+		 *
+		 * pccard_type is exactly the right thing to test: it is what tells Linux
+		 * the HDD and ethernet exist at all (arch/mips/ps2/setup.c assigns it to
+		 * ps2_pccard_present, which smap.c gates on), and it has just been
+		 * decided above from the DEV9 result, the EnableDev9 setting and network
+		 * support together. Zero means Linux is being told there is no adapter,
+		 * so ip= could only ever fail. Non-zero means the hardware is there and
+		 * configured, and autoconfiguration is left alone -- which is what an
+		 * NFS root needs.
+		 *
+		 * An explicit ip= on the command line always wins: someone who wrote one
+		 * meant it. */
+		if ((bootpage.bootinfo.pccard_type == 0) &&
+			!hasCommandlineOption(bootpage.commandline, "ip=")) {
+			size_t used = strlen(bootpage.commandline);
+
+			snprintf(&bootpage.commandline[used],
+				sizeof(bootpage.commandline) - used, " ip=off");
+			kprintf("No network hardware, appended ip=off to skip DHCP.\n");
+			kprintf("Kernel command line: \"%s\"\n", bootpage.commandline);
 		}
 
 		/* Setup exceptions: */

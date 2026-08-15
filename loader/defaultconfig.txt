@@ -17,5 +17,11 @@
 
 KernelFileName=host:vmlinux.gz
 InitrdFileName=host:initrd.gz
-KernelParameter=root=/dev/ram0 rw ramdisk_size=16384
+# ip=off keeps the kernel from hunting a DHCP lease it cannot get. It is built
+# with IP autoconfiguration for NFS root, and that runs whether or not an
+# interface exists -- a full round of requests, a timeout, then again, about
+# ninety seconds on a console with no adapter. The loader appends this itself
+# when it tells Linux there is no adapter; stating it here means a boot from
+# this fallback never pays the wait either. Remove it for an NFS root.
+KernelParameter=root=/dev/ram0 rw ramdisk_size=16384 ip=off
 AutoBootTime=0
