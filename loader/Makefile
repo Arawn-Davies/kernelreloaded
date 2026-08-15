@@ -6,7 +6,7 @@ EE_BIN = $(PROGRAM).elf
 EE_OBJS = $(PROGRAM).o main.o jump.o entry.o exception.o interrupts.o graphic.o cache.o
 EE_OBJS += menu.o menuEntry.o pad.o modules.o rom.o loadermenu.o configuration.o eedebug.o
 EE_OBJS += SMS_SIF.o SMS_CDVD.o SMS_CDDA.o getrte.o getsbios.o getelf.o ps2dev9.o hdd.o
-EE_OBJS += nvram.o kprint.o crc32check.o
+EE_OBJS += nvram.o kprint.o crc32check.o font.o
 EE_LIBS = -lpatches -L$(PS2DEV)/gsKit/lib -lgskit -ldmakit -L$(PS2SDK)/ports/lib 
 EE_LIBS += -lmc -lfileXio -lkbd -lcdvd
 ifneq ($(LIBTIFF),)
@@ -77,6 +77,18 @@ EE_FLAGS += -I../tools/crc32gen/
 # calls to POSIX equivalents would be the larger, more correct change, and is
 # worth revisiting once the loader runs -- see docs/porting-notes.md.
 EE_FLAGS += -DNEWLIB_PORT_AWARE
+
+# Draw all text through the BIOS ROM font instead of the glyph atlas
+# (make FONT_ROM=1). A bisect aid for hardware faults -- see font.cpp.
+ifneq ($(FONT_ROM),)
+EE_FLAGS += -DFONT_ROM
+endif
+
+# Leave the starfield backdrop unloaded (make NO_BACKDROP=1). A VRAM bisect
+# aid -- see the note at texStarfield in graphic.cpp.
+ifneq ($(NO_BACKDROP),)
+EE_FLAGS += -DNO_BACKDROP
+endif
 
 ifneq ($(FAKE_EXTRA_RAM),)
 EE_FLAGS += -DFAKE_MAXMEM_MB=$(FAKE_EXTRA_RAM)
@@ -159,7 +171,8 @@ RGB_FILES = \
 	panel.rgb \
 	highlight.rgb \
 	bartrack.rgb \
-	barfill.rgb
+	barfill.rgb \
+	glyphs.rgb
 
 RGB_HEADERS = \
 	$(subst .rgb,.h, $(RGB_FILES))

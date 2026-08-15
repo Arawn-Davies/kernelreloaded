@@ -1,6 +1,7 @@
 /* Copyright (c) 2007 Mega Man */
 #include "menuEntry.h"
 #include "graphic.h"
+#include "font.h"
 
 #define CHECK_ITEM_SIZE 22
 void paint_quad(GSGLOBAL *gsGlobal, int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4, int z, u64 color)
@@ -23,8 +24,6 @@ void MenuEntry::paint(int x, int y, int z)
 	/** Text colour. */
 	u64 TexCol;
 	u64 CheckCol;
-	/** Scale factor for font. Kept in proportion with graphic.cpp's `scale`. */
-	float scale = 0.55f;
 
 	if (selected) {
 		/* White on the dark rounded highlight. It used to be black, which was
@@ -91,8 +90,9 @@ void MenuEntry::paint(int x, int y, int z)
 		gsKit_prim_sprite_texture(gsGlobal, tex, x, y - 3, 0, 0, x + tex->Width, y - 3 + tex->Height, tex->Width, tex->Height, z + 1, 0x80808080 /* color */);
 		x += tex->Width;
 	}
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, x, y, z + 1, scale, TexCol,
-		name);
+	/* Vertically centred in the 26px highlight rather than sitting on a
+	 * baseline chosen by eye, which the atlas makes arithmetic. */
+	fontPrint(x, y + ((26 - fontLineHeight(FONT_MENU)) / 2) - 2, z + 1, TexCol, name, FONT_MENU);
 }
 
 int MenuEntry::execute(void)

@@ -1181,6 +1181,21 @@ void initMenu(Menu *menu)
 	 * config.txt -- so an unattended boot could not be configured at all.
 	 * Value is seconds (0 = off, 1..10), matching autoBootText[]'s index. */
 	addConfigCheckItem("AutoBootTime", &loaderConfig.autoBootTime);
+	/* DEV9 -- the HDD and ethernet -- was reachable only from the Advanced
+	 * Menu, so the only way to turn it off was by hand on every boot.
+	 *
+	 * It is worth turning off. Enabling it makes ps2dev9_init() and ata_setup()
+	 * run for real: expbay_init(), an ATA bus reset with a DelayThread(3000)
+	 * and an ata_wait_busy() poll, ata_reset_devices(), then two interrupt
+	 * enables. That is a few milliseconds of hardware settling on a console.
+	 * Under PCSX2's EE interpreter, at roughly 1-2% of real speed, it is 72
+	 * seconds between "Copying files and start" and the kernel banner, plus
+	 * another 48 on the IOP side where ps2dev9.irx now finds real hardware
+	 * instead of failing fast.
+	 *
+	 * So: EnableDev9=0 in config.txt for a fast boot when the disk and network
+	 * are not the point, without rebuilding anything. */
+	addConfigCheckItem("EnableDev9", &loaderConfig.enableDev9);
 	//linuxMenu->addItem("Show Filename", showText, (void *) &kernelFilename);
 	linuxMenu->addItem("Edit Filename", editString, (void *) &kernelFilename);
 	linuxMenu->addItem("Example Kernel", setExampleKernel, (void *) &kernelFilename);

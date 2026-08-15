@@ -2,6 +2,7 @@
 #include "menu.h"
 #include "graphic.h"
 #include "configuration.h"
+#include "font.h"
 
 void Menu::paint(void)
 {
@@ -15,18 +16,26 @@ void Menu::paint(void)
 	x = positionX;
 
 	if (title != NULL) {
-		/** Text colour. */
+		/* Menu heading, in the atlas face so it belongs to the same typographic
+		 * family as the entries below it rather than to the BIOS ROM font. Its
+		 * own scale, between the entries and the title lockup, and a rule under
+		 * it to separate the heading from the list without a wide empty gap. */
 		static u64 TexCol;
-		/** Scale factor for font. */
-		/* Menu heading. Reduced from 1.4 -- at that size the BIOS ROM font
-		 * dwarfed the pre-rendered title lockup above it. */
-		static float scale = 0.95f;
+		static u64 TexRule;
+		int w;
 
 		TexCol = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00);
+		TexRule = GS_SETREG_RGBAQ(0x4F, 0xB4, 0xF0, 0x40, 0x00);
 
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + x, yoffset + y, 3, scale, TexCol,
-			title);
-		y += 34;	/* gap under the heading, scaled with it */
+		fontPrint(xoffset + x, yoffset + y, 3, TexCol, title, FONT_TITLE);
+		w = fontMeasure(title, FONT_TITLE);
+		y += fontLineHeight(FONT_TITLE) + 3;
+
+		/* Rule the width of the heading, in the lockup's blue. Measured, so it
+		 * tracks the title rather than being a guessed constant. */
+		gsKit_prim_sprite(gsGlobal, xoffset + x, yoffset + y,
+			xoffset + x + w, yoffset + y + 1, 3, TexRule);
+		y += 8;
 	}
 
 	start = 0;
