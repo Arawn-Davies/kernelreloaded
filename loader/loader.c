@@ -416,6 +416,12 @@ moduleEntry_t modules[] = {
 		.network = -1,
 		.dev9 = 1,
 		.debug_mode = -1,
+		/* A slim is assumed to have DEV9 because the register cannot be read
+		 * there, which is right for a console and wrong under an emulator with
+		 * no DEV9 configured: the IOP then refuses this with -200. Networking
+		 * is the only thing lost, so log it and carry on rather than stranding
+		 * the boot on a pad prompt at Buffer check. */
+		.optional = 1,
 	},
 	/* ps2smap.irx and ps2link.irx entries removed.
 	 *

@@ -11,6 +11,16 @@ extern "C" {
 extern char ps2_console_type[];
 extern char ps2_region_type[];
 
+/** Console generation as it is usually spoken about: "30K", "50K", "77K", "90K"
+ * and so on. Points at a static buffer, never NULL. */
+const char *getModelFamily(void);
+
+/** True for a slim chassis, derived from the generation rather than read
+ * separately -- the slim arrived with the 700XX, so 70K and up are slim and 50K
+ * and below are fat. Not the same question as isSlimPSTwo(), which answers from
+ * the ROM version for IOP module selection. */
+int isSlimModel(void);
+
 void nvram_init(void);
 u8 *get_nvram(void);
 extern int nvm_errors;

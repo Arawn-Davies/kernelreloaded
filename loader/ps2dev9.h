@@ -11,6 +11,12 @@ extern "C" {
  * register and caches the answer. */
 int ps2dev9_probe(void);
 
+/** What ps2dev9_probe() last answered, without probing: 0x20, 0x30, 0 for
+ * none, or -1 if it has not run. For callers that must never touch the
+ * register -- the paint path in particular, where the model may not be known
+ * yet and a slim would be misread as a fat. */
+int ps2dev9_probed(void);
+
 int ps2dev9_init(void);
 int pcic_get_cardtype(void);
 void dev9IntrEnable(int mask);

@@ -651,7 +651,9 @@ void graphic_common(void)
 		paintBootLog();
 	} else if (texPanel != NULL) {
 		int px = xoffset + 400;
-		int py = yoffset + 200;
+		/* Up from 200: the panel grew to ten rows with Chassis/Adapter/HDD and
+		 * its lower edge reached the progress bar at LOAD_BAR_Y. */
+		int py = yoffset + 140;
 		int row = py + 8 + fontLineHeight(FONT_PANEL) + 8;
 
 		paintTexture(texPanel, px, py, 2);
@@ -684,32 +686,83 @@ void graphic_common(void)
 		row += fontLineHeight(FONT_PANEL) + 2
 
 		{
-			/* Name the region rather than showing raw NVRAM bytes.
+			/* Derived once, not per frame.
 			 *
-			 * ps2_region_type is "S%02x T%02x F%02x R%02x (%d NVM errors)",
-			 * which is diagnostic detail for the Versions menu, not something
-			 * to read at a glance -- and it overran the panel.
+			 * All of this is fixed for the life of the boot -- the console does
+			 * not change model, chassis or region while the menu is up -- yet
+			 * it was recomputed on every repaint: a strlen and a switch, two
+			 * calls into modelGeneration() (each a strstr plus a ROM version
+			 * read), and an snprintf, sixty times a second.
 			 *
-			 * ROMVER carries the region as a letter at index 4 ("0160EC..."
-			 * -> 'E'), which is the same source region detection falls back to
-			 * in modules.c and is more dependable than NVRAM. The raw bytes are
-			 * still available under Advanced Menu -> Versions. */
-			const char *region;
+			 * Rebuilt only when an input actually changes. Two do, once each:
+			 * ps2_console_type is empty until nvram_init() fills it, and the
+			 * DEV9 answer arrives later still, during startModules().
+			 *
+			 * NOTHING here probes. On those early frames, before the model
+			 * string exists, modelGeneration() falls back to the ROM version
+			 * and a slim reads as a fat -- which would take the fat branch and
+			 * read the DEV9 revision register, which hangs a slim dead. Only
+			 * what the probe has already answered from where it was safe to
+			 * ask is shown; until then, "...".
+			 *
+			 * "HDD" reports the IDE PORT, not a fitted drive: an expansion bay
+			 * carries one, PCMCIA does not, and a slim has no bay at all. */
+			static char chassis[24];
+			static const char *region = "unknown";
+			static const char *adapter = "...";
+			static const char *hdd = "...";
+			static char builtFrom[64];
+			static int builtDev9 = -2;
 
-			switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
-			case 'J': region = "Japan";     break;
-			case 'A': region = "USA";       break;
-			case 'E': region = "Europe";    break;
-			case 'C': region = "China";     break;
-			case 'H': region = "Asia";      break;
-			case 'K': region = "Korea";     break;
-			case 'R': region = "Russia";    break;
-			default:  region = "unknown";   break;
+			const int dev9hw = ps2dev9_probed();
+			/* Keyed on the model string's CONTENT, not merely on it being
+			 * non-empty. It holds an earlier value before nvram_init() settles
+			 * it, so a presence test latches whatever was there first -- which
+			 * cached a SCPH-70004 as "fat 10K" while nvram_init's own log line
+			 * said slim 70K. A strcmp per frame is nothing beside the strstr,
+			 * ROM read and snprintf it guards. */
+			if ((strcmp(builtFrom, ps2_console_type) != 0) || (dev9hw != builtDev9)) {
+				snprintf(builtFrom, sizeof(builtFrom), "%s", ps2_console_type);
+				builtDev9 = dev9hw;
+
+				/* Region from ROMVER's letter at index 4 ("0160EC..." -> 'E'),
+				 * the same source modules.c falls back to and more dependable
+				 * than NVRAM. ps2_region_type holds the raw bytes and is
+				 * diagnostic detail for the Versions menu, not something to
+				 * read at a glance -- and it overran the panel. */
+				switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
+				case 'J': region = "Japan";     break;
+				case 'A': region = "USA";       break;
+				case 'E': region = "Europe";    break;
+				case 'C': region = "China";     break;
+				case 'H': region = "Asia";      break;
+				case 'K': region = "Korea";     break;
+				case 'R': region = "Russia";    break;
+				default:  region = "unknown";   break;
+				}
+
+				snprintf(chassis, sizeof(chassis), "%s %s",
+					isSlimModel() ? "slim" : "fat", getModelFamily());
+
+				if (isSlimModel()) {
+					adapter = "built-in";
+					hdd = "no";
+				} else if (dev9hw < 0) {
+					adapter = "...";
+					hdd = "...";
+				} else {
+					adapter = (dev9hw == 0x30) ? "Exp. bay" :
+						(dev9hw == 0x20) ? "PCMCIA" : "none";
+					hdd = (dev9hw == 0x30) ? "yes" : "no";
+				}
 			}
 
 			PANEL_ROW("Model", ps2_console_type);
+			PANEL_ROW("Chassis", chassis);
 			PANEL_ROW("ROM", ps2_rom_version);
 			PANEL_ROW("Region", region);
+			PANEL_ROW("Adapter", adapter);
+			PANEL_ROW("HDD", hdd);
 			/* The address Linux will actually use, parsed out of the kernel
 			 * command line's "ip=<client>:<server>:..." -- not getMyIP(), which
 			 * is kernelloader's own ps2link setting and defaults to
@@ -872,15 +925,33 @@ void graphic_paint(void)
 	if ((statusMessage != NULL) || (loadName[0] != 0)) {
 		const char *what = (statusMessage != NULL) ? statusMessage : loadName;
 		const int bx = xoffset + ((640 - LOAD_BAR_W) / 2);
+		/* A failed boot should be obvious from across the room, so the bar goes
+		 * red and the message sits under it. The full text is in the log window
+		 * above with its "[kloader ERROR]" prefix; this is the summary. */
+		const char *err = getErrorMessage();
 
 		fontPrintCentred(xoffset + 320,
 			yoffset + LOAD_BAR_Y - fontLineHeight(FONT_HINT) - 6,
 			5, TexCol, what, FONT_HINT);
 
+		if (err != NULL) {
+			fontPrintClipped(bx, yoffset + LOAD_BAR_Y + 26, 5, TexRed,
+				err, LOAD_BAR_W, FONT_HINT);
+		}
+
 		if (texBarTrack != NULL) {
 			paintTextureStretched(texBarTrack, bx, yoffset + LOAD_BAR_Y, 4, LOAD_BAR_W);
-			paintTextureStretchedPartial(texBarFill, bx, yoffset + LOAD_BAR_Y, 5,
-				LOAD_BAR_W, loadPercentage);
+			if (err != NULL) {
+				/* Flat red over the track rather than the blue fill texture,
+				 * which has no tint parameter. Full width: the boot is not
+				 * going any further, so how far it got is no longer the point. */
+				gsKit_prim_sprite(gsGlobal, bx + 2, yoffset + LOAD_BAR_Y + 2,
+					bx + LOAD_BAR_W - 2,
+					yoffset + LOAD_BAR_Y + texBarTrack->Height - 2, 5, Red);
+			} else {
+				paintTextureStretchedPartial(texBarFill, bx, yoffset + LOAD_BAR_Y, 5,
+					LOAD_BAR_W, loadPercentage);
+			}
 		} else {
 			gsKit_prim_sprite(gsGlobal, bx, yoffset + LOAD_BAR_Y,
 				bx + LOAD_BAR_W, yoffset + LOAD_BAR_Y + 20, 4, White);
@@ -892,7 +963,13 @@ void graphic_paint(void)
 		}
 	}
 	msg = getErrorMessage();
-	if (msg != NULL) {
+	if (bootlogActive()) {
+		/* The log window occupies this space, and error_printf() already
+		 * kprintf()s every message with a "[kloader ERROR]" prefix -- so the
+		 * error is in the window regardless, with the lines leading up to it.
+		 * The bar above turns red and carries the summary; drawing the old
+		 * overlay as well put red text straight across the log. */
+	} else if (msg != NULL) {
 		fontPrint(xoffset + 50, yoffset + 170, 3, TexRed,
 			"Error Message:", FONT_TITLE);
 		printTextBlock(50, 230, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, msg, 0, -1, 0);
