@@ -14,7 +14,9 @@
 #include "configuration.h"
 #include "kprint.h"
 #include "nvram.h"
+#include "font.h"
 #include "modules.h"
+#include "ps2dev9.h"
 #include "loadermenu.h"
 #include <string.h>
 #include <screenshot.h>
@@ -74,6 +76,11 @@ static u64 TexInfo;
 
 /** Font used for printing text. */
 static GSFONTM *gsFont;
+
+GSFONTM *getGsFont(void)
+{
+	return gsFont;
+}
 
 /** File name that is printed on screen. */
 static char loadName[26];
@@ -151,6 +158,27 @@ static GSTEXTURE *texBarFill = NULL;
  * from Height minus this. Raised from 42 to clear the 34px button bar that now
  * occupies the bottom edge, which the hints would otherwise be drawn over. */
 static int reservedEndOfDisplayY = 72;
+
+/** Baseline for the status / filename line.
+ *
+ * The title lockup is drawn at y=24 and is 74px tall, so it occupies down to
+ * y=98. The old value of 90 put the status text INSIDE it -- "Copying files and
+ * start..." printed across "PlayStation 2 Linux Loader". Sits below the lockup
+ * now, where a menu heading would be, so it reads as the current activity. */
+static const int STATUS_LINE_Y = 108;
+
+/** Top of the loading bar.
+ *
+ * Clears the status line above it rather than sitting under its descenders,
+ * which is what a bar at 120 did to "host:initrd_clean.gz". */
+static const int BAR_Y = 138;
+
+/** Width of the loading bar.
+ *
+ * Matches the column printTextBlock wraps to, so the bar, the status line and
+ * any wrapped text share one left and right edge. The artwork is 260px and is
+ * stretched to fit. */
+static const int BAR_W = 540;
 
 static bool usePad = false;
 
@@ -360,6 +388,54 @@ static void paintTexturePartial(GSTEXTURE *tex, int x, int y, int z, int width)
 		GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00));
 }
 
+/** Draw a texture stretched to a given width.
+ *
+ * The bar artwork is 260px wide and was drawn at native size, which is under
+ * half the usable width of the screen. Stretching is free -- the GS scales
+ * while sampling, and gsKit_prim_sprite_texture already takes independent
+ * source and destination rectangles. */
+static void paintTextureStretched(GSTEXTURE *tex, int x, int y, int z, int width)
+{
+	if (tex == NULL) {
+		return;
+	}
+	gsKit_TexManager_bind(gsGlobal, tex);
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0,
+		x + width, y + tex->Height,
+		tex->Width, tex->Height, z,
+		GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
+}
+
+/** As above, revealed to a percentage.
+ *
+ * Source and destination are clipped by the SAME fraction, so the fill's
+ * gradient stays in step with the track instead of being squashed into
+ * whatever is revealed. */
+static void paintTextureStretchedPartial(GSTEXTURE *tex, int x, int y, int z, int width, int percent)
+{
+	int dw;
+	int sw;
+
+	if ((tex == NULL) || (percent <= 0)) {
+		return;
+	}
+	if (percent > 100) {
+		percent = 100;
+	}
+	dw = (width * percent) / 100;
+	sw = ((int) tex->Width * percent) / 100;
+	if (sw <= 0) {
+		return;
+	}
+	gsKit_TexManager_bind(gsGlobal, tex);
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0,
+		x + dw, y + tex->Height,
+		sw, tex->Height, z,
+		GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
+}
+
 static char infoBuffer[MAX_INFO_BUFFER];
 static int infoBufferPos = 0;
 
@@ -368,81 +444,87 @@ static int writeable = 0;
 static int cursor_counter = 0;
 static int cursorpos = 0;
 
-int printTextBlock(int x, int y, int z, int maxCharsPerLine, int maxY, const char *msg, int scrollPos, int cursorpos, int cursor)
+int printTextBlock(int x, int y, int z, int maxWidth, int maxY, const char *msg, int scrollPos, int cursorpos, int cursor)
 {
-	char lineBuffer[maxCharsPerLine + 1]; /* + 1 for cursor */
-	int i;
+	/* Wraps on MEASURED width rather than a character count.
+	 *
+	 * The old signature took maxCharsPerLine and every caller passed 26, which
+	 * is the only honest answer when the font is fixed-pitch and unmeasurable:
+	 * 26 of the widest character had to fit. With a proportional face that
+	 * wastes most of a line on ordinary text and still overruns on a line full
+	 * of capitals. Now a line is filled until the next glyph would cross
+	 * maxWidth, so it uses the room it actually has. */
+	char lineBuffer[256];
 	int pos;
-	int lastSpace;
-	int lastSpacePos;
 	int lineNo;
-	int insertCursorPos;
+	const int lineStep = fontLineHeight(FONT_BODY) + 6;
 
 	pos = 0;
 	lineNo = 0;
 	do {
-		i = 0;
-		lastSpace = -1;
-		lastSpacePos = 0;
-		insertCursorPos = -1;
+		int i = 0;
+		int w = 0;
+		int lastSpace = -1;
+		int lastSpacePos = 0;
+		int insertCursorPos = -1;
+
 		if (pos == cursorpos) {
-			if (pos == 0) {
-				insertCursorPos = i;
-			}
+			insertCursorPos = 0;
 		}
-		while (i < maxCharsPerLine) {
-			lineBuffer[i] = msg[pos];
-			if (msg[pos] == 0) {
+
+		while (i < (int) sizeof(lineBuffer) - 2) {
+			char c = msg[pos];
+			int adv;
+
+			if (c == 0) {
 				lastSpace = i;
 				lastSpacePos = pos;
 				break;
-			} else if (msg[pos] == '\r') {
-				lineBuffer[i] = 0;
-				lastSpace = i;
-				lastSpacePos = pos + 1;
-			} else if (msg[pos] == '\n') {
-				lineBuffer[i] = 0;
+			}
+			if (c == '\r') {
+				pos++;
+				continue;
+			}
+			if (c == '\n') {
 				lastSpace = i;
 				lastSpacePos = pos + 1;
 				pos++;
 				break;
 			}
-			if (i >= (maxCharsPerLine - 1)) {
-				if (msg[pos] == ' ') {
-					/* Last character is a space, show it at the beginning of the next line. */
-					lastSpace = i;
-					lastSpacePos = pos;
-				}
+
+			/* One character at a time: measuring the remaining string per
+			 * character would be quadratic on a long kernel command line. */
+			adv = fontCharWidth(c, FONT_BODY);
+			if ((w + adv) > maxWidth) {
 				break;
 			}
-			if (msg[pos] == ' ') {
-				/* Current character is a space. */
+
+			if (c == ' ') {
 				lastSpace = i;
 				lastSpacePos = pos + 1;
-				i++;
-			} else if (msg[pos] == '\r') {
-				/* ignore */
-			} else {
-				i++;
 			}
+			lineBuffer[i] = c;
+			i++;
+			w += adv;
 			pos++;
 			if (pos == cursorpos) {
 				insertCursorPos = i;
 			}
 		}
+
 		if (lastSpace >= 0) {
+			/* Break at the last space so words stay whole. */
 			pos = lastSpacePos;
 		} else {
-			/* No whitespace in current line, cut off at last character in line. */
+			/* Nothing to break on -- a single unbroken run longer than the
+			 * line, such as a device path. Cut it. */
 			lastSpace = i;
 		}
 		lineBuffer[lastSpace] = 0;
+
 		if ((insertCursorPos >= 0) && (lastSpace >= insertCursorPos)) {
-			char *a;
 			char *c;
 
-			a = &lineBuffer[insertCursorPos + 1],
-			c = &lineBuffer[lastSpace];
 			for (c = &lineBuffer[lastSpace]; c >= &lineBuffer[insertCursorPos]; c--) {
 				c[1] = c[0];
 			}
@@ -454,19 +536,15 @@ int printTextBlock(int x, int y, int z, int maxCharsPerLine, int maxY, const cha
 		}
 
 		if (lineNo >= scrollPos) {
-#if 0
-			kprintf("Test pos %d i %d lastSpacePos %d %s\n", pos, i, lastSpacePos, lineBuffer);
-#else
-			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + x, yoffset + y, z, scale, TexCol,
-				lineBuffer);
-#endif
-			y += 30;
-			if (y > (maxY - 30)) {
+			fontPrint(xoffset + x, yoffset + y, z, TexCol, lineBuffer, FONT_BODY);
+			y += lineStep;
+			if (y > (maxY - lineStep)) {
 				break;
 			}
 		}
 		lineNo++;
-	} while(msg[pos] != 0);
+	} while (msg[pos] != 0);
+
 	if (lineNo < scrollPos) {
 		return lineNo;
 	} else {
@@ -524,19 +602,36 @@ void graphic_common(void)
 	if (texPanel != NULL) {
 		int px = xoffset + 400;
 		int py = yoffset + 200;
-		int row = py + 40;
+		int row = py + 8 + fontLineHeight(FONT_PANEL) + 8;
 
 		paintTexture(texPanel, px, py, 2);
 
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 14, py + 14, 3, 0.5,
-			TexPanelHead, "System Info");
+		/* Heading centred on the panel rather than pinned to a guessed
+		 * column, which needs a string width -- the thing gsKit_fontm could
+		 * not give us. */
+		fontPrintCentred(px + (texPanel->Width / 2), py + 8, 3,
+			TexPanelHead, "System Info", FONT_PANEL);
 
+		/* Labels left, values RIGHT-ALIGNED to the panel's inner edge, as the
+		 * mockup has them. The old code put values at a fixed x=88 and hoped:
+		 * that is why "DVD-Video" had to become "DVD-V", because at the longer
+		 * label the value collided with it and rendered as "DVD-Videono". */
+/* The value is clipped to whatever the label leaves, so a long one -- a full
+ * ROM version is 14 characters -- truncates with an ellipsis instead of
+ * running backwards into the label. */
 #define PANEL_ROW(label, value) \
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 14, row, 3, 0.42, \
-			TexInfo, (label)); \
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 88, row, 3, 0.42, \
-			TexInfo, (value)); \
-		row += 17
+		fontPrint(px + 12, row, 3, TexInfo, (label), FONT_PANEL); \
+		{ \
+			int lw = fontMeasure((label), FONT_PANEL); \
+			int avail = texPanel->Width - 24 - lw - 8; \
+			int vw = fontMeasure((value), FONT_PANEL); \
+			if (vw > avail) { \
+				fontPrintClipped(px + 12 + lw + 8, row, 3, TexInfo, (value), avail, FONT_PANEL); \
+			} else { \
+				fontPrintRight(px + texPanel->Width - 12, row, 3, TexInfo, (value), FONT_PANEL); \
+			} \
+		} \
+		row += fontLineHeight(FONT_PANEL) + 2
 
 		{
 			/* Name the region rather than showing raw NVRAM bytes.
@@ -609,26 +704,39 @@ void graphic_common(void)
 			 * than "DVD-Video": the label column is 74px, and the longer text
 			 * ran straight into its own value ("DVD-Videono"). */
 			PANEL_ROW("Network", hasNetworkSupport() ? "yes" : "no");
-			PANEL_ROW("DVD-V", isDVDVSupported() ? "yes" : "no");
+			PANEL_ROW("DVD-Video", isDVDVSupported() ? "yes" : "no");
 			PANEL_ROW("Loader", LOADER_VERSION);
 		}
 #undef PANEL_ROW
 	}
-	/* The byline used to sit here. It has moved to Advanced Menu -> Versions ->
-	 * Credits: this row is a fixed 640px shared with the hint text on the left,
-	 * and gsKit_fontm gives no way to measure a string, so anything longer than
-	 * about a dozen characters either runs off the right edge or collides with
-	 * the hints. A menu screen has room and does not need to be re-tuned every
-	 * time a name changes. With only the mode and build state left here, the
-	 * block fits back at its original x=490. */
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY - 15, 3, 0.5, TexInfo,
-		modeDescription[currentMode]);
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.5, TexInfo,
+	/* Video mode and build state, top right.
+	 *
+	 * These used to sit bottom right, above the button bar. That was fine while
+	 * the System Info panel held seven rows, but it now holds ten and reaches
+	 * far enough down that the two blocks overlapped -- "Auto" printed across
+	 * the DVD-Video value and "UNSTABLE" across the loader version, which is
+	 * how the collision was spotted.
+	 *
+	 * Top right is the only place with room that does not have to be re-tuned
+	 * whenever a panel row is added: the title lockup occupies x=140..424 at
+	 * y=24..98, the panel does not start until y=200, and nothing else is drawn
+	 * to the right of the lockup. The bottom edge was never a good home for it
+	 * either -- that strip is shared with the contextual hints on the left and
+	 * the button bar beneath.
+	 *
+	 * Right-aligned to the same x=620 safe-area edge the panel values use, so
+	 * the two blocks share a margin.
+	 *
+	 * (The byline that once lived at the bottom moved to Advanced Menu ->
+	 * Versions -> Credits, where a changing name needs no re-tuning.) */
+	fontPrintRight(xoffset + 620, yoffset + 40, 3, TexInfo,
+		modeDescription[currentMode], FONT_STATUS);
+	fontPrintRight(xoffset + 620, yoffset + 40 + fontLineHeight(FONT_STATUS) + 2, 3, TexInfo,
 		"UNSTABLE"
 #ifdef RTE
 		" RTE"
 #endif
-	);
+		, FONT_STATUS);
 }
 
 /** Paint screen when Auto Boot is in process. */
@@ -642,8 +750,8 @@ void graphic_auto_boot_paint(int time)
 	graphic_common();
 
 	snprintf(msg, sizeof(msg), "Auto Boot in %d seconds.", time);
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-		msg);
+	fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+		msg, FONT_HINT);
 
 	gsKit_queue_exec(gsGlobal);
 	gsKit_finish(); /* Ensure that DMA has been finished before switching screen buffer. */
@@ -668,81 +776,84 @@ void graphic_paint(void)
 	}
 
 	if (statusMessage != NULL) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 90, 3, scale, TexCol,
-			statusMessage);
+		fontPrint(xoffset + 50, yoffset + STATUS_LINE_Y, 3, TexCol,
+			statusMessage, FONT_TITLE);
 	} else if (loadName[0] != 0) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 90, 3, scale, TexCol,
-			loadName);
+		/* Clipped rather than trusted to fit: this is a file path, and the
+		 * loaders already ellipse it to 26 characters on the way in because
+		 * nothing could measure it. */
+		fontPrintClipped(xoffset + 50, yoffset + STATUS_LINE_Y, 3, TexCol,
+			loadName, 540, FONT_TITLE);
 		/* Was a flat white rectangle with a red fill -- high contrast, but it
 		 * predates the starfield background and clashed with everything else.
 		 * Now a rounded track with the title lockup's blue as the fill, the
 		 * fill revealed by UV clipping rather than stretched. */
 		if (texBarTrack != NULL) {
-			paintTexture(texBarTrack, xoffset + 50, yoffset + 120, 2);
-			paintTexturePartial(texBarFill, xoffset + 50, yoffset + 120, 3,
-				(texBarFill->Width * loadPercentage) / 100);
+			paintTextureStretched(texBarTrack, xoffset + 50, yoffset + BAR_Y, 2, BAR_W);
+			paintTextureStretchedPartial(texBarFill, xoffset + 50, yoffset + BAR_Y, 3,
+				BAR_W, loadPercentage);
 		} else {
-			gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + 120, xoffset + 50 + 520, yoffset + 140, 2, White);
+			gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + BAR_Y, xoffset + 50 + BAR_W, yoffset + BAR_Y + 20, 2, White);
 			if (loadPercentage > 0) {
-				gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + 120,
-					xoffset + 50 + (520 * loadPercentage) / 100, yoffset + 140, 2, Red);
+				gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + BAR_Y,
+					xoffset + 50 + (BAR_W * loadPercentage) / 100, yoffset + BAR_Y + 20, 2, Red);
 			}
 		}
 	}
 	msg = getErrorMessage();
 	if (msg != NULL) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 170, 3, scale, TexRed,
-			"Error Message:");
-		printTextBlock(50, 230, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, msg, 0, -1, 0);
+		fontPrint(xoffset + 50, yoffset + 170, 3, TexRed,
+			"Error Message:", FONT_TITLE);
+		printTextBlock(50, 230, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, msg, 0, -1, 0);
 	} else {
 		if (!isInfoBufferEmpty()) {
-			scrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, infoBuffer, scrollPos, -1, 0);
+			scrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, infoBuffer, scrollPos, -1, 0);
 		} else {
 			if (inputBuffer != NULL) {
-				inputScrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, inputBuffer, inputScrollPos, writeable ? cursorpos : -1, writeable && (cursor_counter < (getModeFrequenzy()/2)));
+				inputScrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, inputBuffer, inputScrollPos, writeable ? cursorpos : -1, writeable && (cursor_counter < (getModeFrequenzy()/2)));
 			} else if (menu != NULL) {
 				menu->paint();
 			}
 		}
 	}
 	if (enableDisc) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-			"Loading, please wait...");
+		fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+			"Loading, please wait...", FONT_HINT);
 	} else {
 		if (msg != NULL) {
 			if (usePad) {
-				gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-					"Press CROSS to continue.");
+				fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+					"Press CROSS to continue.", FONT_HINT);
 			}
 		} else {
 			if (!isInfoBufferEmpty()) {
 				if (usePad) {
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-						"Press CROSS to continue.");
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-						"Use UP and DOWN to scroll.");
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+						"Press CROSS to continue.", FONT_HINT);
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+						"Use UP and DOWN to scroll.", FONT_HINT);
 				}
 			} else {
 				if (inputBuffer != NULL) {
 					if (writeable) {
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-							"Please use USB keyboard.");
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+							"Please use USB keyboard.", FONT_HINT);
 					}
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, 50, xoffset + gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-						"Press CROSS to quit.");
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+						"Press CROSS to quit.", FONT_HINT);
 				} else if (menu != NULL) {
 					if (usePad) {
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-							"Press CROSS to select menu.");
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-							"Use UP and DOWN to scroll.");
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+							"Press CROSS to select menu.", FONT_HINT);
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+							"Use UP and DOWN to scroll.", FONT_HINT);
 					}
 				}
 			}
 		}
 		if (!usePad) {
-			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-				"Please wait...");
+			fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+				"Please wait...", FONT_HINT);
 		}
 	}
 	gsKit_queue_exec(gsGlobal);
@@ -829,6 +940,11 @@ extern "C" {
 		statusMessage = text;
 		graphic_paint();
 	}
+}
+
+GSGLOBAL *getGsGlobal(void)
+{
+	return gsGlobal;
 }
 
 GSTEXTURE *getTexture(const char *filename)
@@ -988,6 +1104,12 @@ Menu *graphic_main(void)
 	}
 
 	gsFont->Spacing = 0.8f;
+
+	/* The atlas font. gsKit_fontm stays for now so anything not yet ported keeps
+	 * drawing, but everything positioned relative to something else -- centred,
+	 * right-aligned, or clipped to a box -- goes through font.c, because those
+	 * need a string width and gsKit_fontm cannot supply one. */
+	fontInit();
 	texFolder = getTexture("folder.rgb");
 	texUp = getTexture("up.rgb");
 	texBack = getTexture("back.rgb");
@@ -995,7 +1117,16 @@ Menu *graphic_main(void)
 	texUnselected = getTexture("unselected.rgb");
 	texPenguin = getTexture("penguin.rgb");
 	texDisc = getTexture("disc.rgb");
+#ifdef NO_BACKDROP
+	/* VRAM bisect aid (make NO_BACKDROP=1). The 731x512 backdrop is 1.5MB of
+	 * the 4MB of VRAM once gsKit rounds its buffer width up to 768, which is
+	 * what pushes a PAL 640x512 double-buffered display over the limit. Leave
+	 * it unloaded to test that; everything else draws as usual. */
+	texStarfield = NULL;
+	kprintf("graphic: NO_BACKDROP build, starfield not uploaded\n");
+#else
 	texStarfield = getTexture("starfield.rgb");
+#endif
 	texTitle = getTexture("title.rgb");
 	texBottomBar = getTexture("bottombar.rgb");
 	texPanel = getTexture("panel.rgb");
@@ -1417,6 +1548,7 @@ extern "C" {
 		}
 
 		/* Fresh font object for the new GSGLOBAL, mirroring graphic_main(). */
+		fontReset();
 		gsFont = gsKit_init_fontm();
 		if (gsKit_fontm_upload(gsGlobal, gsFont) != 0) {
 			kprintf("Can't find any font to use\n");

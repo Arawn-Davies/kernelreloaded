@@ -26,6 +26,15 @@ GSTEXTURE *getTexHighlight(void);
 /** Draw a texture at (x, y) with depth z. Binds it first. */
 void paintTexture(GSTEXTURE *tex, int x, int y, int z);
 GSTEXTURE *getTexUnselected(void);
+/* graphic.cpp keeps gsGlobal file-static; font.cpp needs it to draw, and an
+ * accessor is preferable to widening the variable's scope. */
+GSGLOBAL *getGsGlobal(void);
+
+/** The BIOS ROM font. Exposed for the FONT_ROM fallback in font.cpp. */
+GSFONTM *getGsFont(void);
+/* Defined in graphic.cpp but never declared in a header: every caller was in
+ * graphic.cpp itself until now. */
+GSTEXTURE *getTexture(const char *filename);
 bool isNTSCMode(void);
 int getCurrentMode(void);
 #endif
