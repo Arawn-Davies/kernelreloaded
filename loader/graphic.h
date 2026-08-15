@@ -42,6 +42,11 @@ int getCurrentMode(void);
 #ifdef __cplusplus
 extern "C" {
 #endif
+	/* Which slice of the overall bar the current stage fills, as base and span
+	 * in percent. Set once per boot stage; graphic_setPercentage() maps each
+	 * loader's own 0..100 into it, so the bar fills once across the whole boot
+	 * instead of restarting per file. Default 0/100 is the identity. */
+	void graphic_setLoadStage(int base, int span);
 	void graphic_setPercentage(int percentage, const char *name);
 	void setErrorMessage(const char *text);
 	const char *getErrorMessage(void);

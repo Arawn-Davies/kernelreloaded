@@ -14,6 +14,7 @@
 #include "configuration.h"
 #include "kprint.h"
 #include "nvram.h"
+#include "bootlog.h"
 #include "font.h"
 #include "modules.h"
 #include "ps2dev9.h"
@@ -55,6 +56,8 @@ static GSGLOBAL *gsGlobal = NULL;
 /** Colours used for painting. */
 static u64 White, Black, Blue, Red;
 
+static void paintBootLog(void);
+
 /** Text colour. */
 static u64 TexCol;
 
@@ -89,6 +92,17 @@ static const char *statusMessage = NULL;
 
 /** Percentage for loading file shown as progress bar. */
 static int loadPercentage = 0;
+
+/* The window of the overall bar that the current stage occupies.
+ *
+ * Every loader reports 0..100 for the file it is reading, so the bar used to
+ * restart for each one -- modules, then SBIOS, then the kernel, then the initrd,
+ * four sweeps that say nothing about how far the boot as a whole has got. The
+ * stage maps that per-file percentage into a slice of the bar instead, so it
+ * fills once from empty to full across the whole boot. Callers are unchanged;
+ * only loader.c needs to say which slice it is in. */
+static int stageBase = 0;
+static int stageSpan = 100;
 
 /** Scale factor for font.
  *
@@ -130,7 +144,6 @@ static GSTEXTURE *texUnselected = NULL;
 
 static GSTEXTURE *texPenguin = NULL;
 
-static GSTEXTURE *texDisc = NULL;
 
 static GSTEXTURE *texStarfield = NULL;
 
@@ -179,6 +192,12 @@ static const int BAR_Y = 138;
  * any wrapped text share one left and right edge. The artwork is 260px and is
  * stretched to fit. */
 static const int BAR_W = 540;
+
+/* During the load the bar moves to the bottom centre, macOS-style, so it does
+ * not sit across the boot log. Narrower than BAR_W because it is centred and
+ * has nothing to line up with on the left. */
+static const int LOAD_BAR_W = 400;
+static const int LOAD_BAR_Y = 380;
 
 static bool usePad = false;
 
@@ -353,6 +372,29 @@ void check_screen_offsets(void)
  * chunking -- which also retires the buggy gsKit_texture_upload_inline()
  * helper whose lastMem/lastVram cache was never actually assigned.
  */
+/* Same draw with the texture modulated by a brightness level.
+ *
+ * gsKit multiplies the texture by the vertex colour, where 0x80 is 1.0 -- so
+ * the scale runs past unmodified: 0x40 is half, 0xC0 is one and a half. Both
+ * ends are used by the button bar, which reads washed out at 1.0 against the
+ * starfield and should be plainly dead during a load. */
+#define SHADE_DIM    0x40
+#define SHADE_BRIGHT 0xC0
+
+static void paintTextureShaded(GSTEXTURE *tex, int x, int y, int z, u8 level)
+{
+	if (tex == NULL) {
+		return;
+	}
+
+	gsKit_TexManager_bind(gsGlobal, tex);
+
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0, x + tex->Width, y + tex->Height,
+		tex->Width, tex->Height, z,
+		GS_SETREG_RGBAQ(level, level, level, 0x80, 0x00));
+}
+
 void paintTexture(GSTEXTURE *tex, int x, int y, int z)
 {
 	if (tex == NULL) {
@@ -579,10 +621,13 @@ void graphic_common(void)
 	 * inside the 640px safe area. */
 	paintTexture(texTitle, xoffset + 140, yoffset + 24, 2);
 
-	/* Full-width, anchored to the bottom edge. */
+	/* Full-width, anchored to the bottom edge. Dimmed during the load, when
+	 * none of the buttons it advertises are live. */
 	if (texBottomBar != NULL) {
-		paintTexture(texBottomBar, xoffset,
-			gsGlobal->Height - texBottomBar->Height, 2);
+		const int by = gsGlobal->Height - texBottomBar->Height;
+
+		paintTextureShaded(texBottomBar, xoffset, by, 2,
+			bootlogActive() ? SHADE_DIM : SHADE_BRIGHT);
 	}
 
 	/* System Info panel.
@@ -599,7 +644,12 @@ void graphic_common(void)
 	 * gsKit_fontm offers no way to measure a rendered string, so right-aligning
 	 * the values (as the mockup does) is not possible until there is a glyph
 	 * atlas with an advance-width table. */
-	if (texPanel != NULL) {
+	if (bootlogActive()) {
+		/* The boot has left the menu, so the System Info panel is gone and the
+		 * log takes the screen. What is on it now is what the loader is doing;
+		 * what the console is are answers the user already had time to read. */
+		paintBootLog();
+	} else if (texPanel != NULL) {
 		int px = xoffset + 400;
 		int py = yoffset + 200;
 		int row = py + 8 + fontLineHeight(FONT_PANEL) + 8;
@@ -762,6 +812,44 @@ void graphic_auto_boot_paint(int time)
 }
 
 /** Paint current state on screen. */
+/* The boot log window.
+ *
+ * Modelled on the SGI ARCS console: a bordered box over the background with
+ * the log inside, top-aligned, oldest line first. Deliberately not a full
+ * screen console -- the loader's own title and progress bar still say what
+ * stage it is at, and the log says what that stage is actually doing.
+ *
+ * Drawn from primitives rather than a texture: it has to work when the failure
+ * being diagnosed might be a texture upload. */
+static void paintBootLog(void)
+{
+	const int x = xoffset + 40;
+	const int y = yoffset + 120;
+	const int w = 560;
+	const int h = 16 + (BOOTLOG_LINES * (fontLineHeight(FONT_PANEL) + 1));
+	int i;
+	int row;
+
+	/* Border, then the darker field inside it. Two sprites, so the frame is
+	 * whatever is left showing round the edge. */
+	gsKit_prim_sprite(gsGlobal, x, y, x + w, y + h, 2, TexPanelHead);
+	gsKit_prim_sprite(gsGlobal, x + 2, y + 2, x + w - 2, y + h - 2, 3, Black);
+
+	row = y + 8;
+	for (i = 0; i < bootlogCount(); i++) {
+		const char *line = bootlogLine(i);
+
+		if (line == NULL) {
+			break;
+		}
+		/* Clipped, not wrapped: a wrapped line would push an older one off the
+		 * top, and the end of a long path matters less than keeping the
+		 * sequence of stages intact. */
+		fontPrintClipped(x + 8, row, 4, TexInfo, line, w - 16, FONT_PANEL);
+		row += fontLineHeight(FONT_PANEL) + 1;
+	}
+}
+
 void graphic_paint(void)
 {
 	const char *msg;
@@ -771,32 +859,35 @@ void graphic_paint(void)
 	}
 	graphic_common();
 
-	if (enableDisc) {
-		paintTexture(texDisc, xoffset + 100, yoffset + 300, 40);
-	}
+	/* The disc sits at 100,300 and the boot log covers that, so it would draw
+	 * straight through the text. It says nothing the log does not. */
+	/* One progress bar, bottom centre, with what is being read in small text
+	 * above it -- the shape of a macOS startup.
+	 *
+	 * Used for every load, not only a boot. It is the same information whether
+	 * the loader is reading a kernel or a file the browser asked for, and a bar
+	 * that moves position depending on context is harder to read than one that
+	 * does not. At FONT_TITLE across the top it also collided with the boot log
+	 * and drew over its first two lines. */
+	if ((statusMessage != NULL) || (loadName[0] != 0)) {
+		const char *what = (statusMessage != NULL) ? statusMessage : loadName;
+		const int bx = xoffset + ((640 - LOAD_BAR_W) / 2);
 
-	if (statusMessage != NULL) {
-		fontPrint(xoffset + 50, yoffset + STATUS_LINE_Y, 3, TexCol,
-			statusMessage, FONT_TITLE);
-	} else if (loadName[0] != 0) {
-		/* Clipped rather than trusted to fit: this is a file path, and the
-		 * loaders already ellipse it to 26 characters on the way in because
-		 * nothing could measure it. */
-		fontPrintClipped(xoffset + 50, yoffset + STATUS_LINE_Y, 3, TexCol,
-			loadName, 540, FONT_TITLE);
-		/* Was a flat white rectangle with a red fill -- high contrast, but it
-		 * predates the starfield background and clashed with everything else.
-		 * Now a rounded track with the title lockup's blue as the fill, the
-		 * fill revealed by UV clipping rather than stretched. */
+		fontPrintCentred(xoffset + 320,
+			yoffset + LOAD_BAR_Y - fontLineHeight(FONT_HINT) - 6,
+			5, TexCol, what, FONT_HINT);
+
 		if (texBarTrack != NULL) {
-			paintTextureStretched(texBarTrack, xoffset + 50, yoffset + BAR_Y, 2, BAR_W);
-			paintTextureStretchedPartial(texBarFill, xoffset + 50, yoffset + BAR_Y, 3,
-				BAR_W, loadPercentage);
+			paintTextureStretched(texBarTrack, bx, yoffset + LOAD_BAR_Y, 4, LOAD_BAR_W);
+			paintTextureStretchedPartial(texBarFill, bx, yoffset + LOAD_BAR_Y, 5,
+				LOAD_BAR_W, loadPercentage);
 		} else {
-			gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + BAR_Y, xoffset + 50 + BAR_W, yoffset + BAR_Y + 20, 2, White);
+			gsKit_prim_sprite(gsGlobal, bx, yoffset + LOAD_BAR_Y,
+				bx + LOAD_BAR_W, yoffset + LOAD_BAR_Y + 20, 4, White);
 			if (loadPercentage > 0) {
-				gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + BAR_Y,
-					xoffset + 50 + (BAR_W * loadPercentage) / 100, yoffset + BAR_Y + 20, 2, Red);
+				gsKit_prim_sprite(gsGlobal, bx, yoffset + LOAD_BAR_Y,
+					bx + (LOAD_BAR_W * loadPercentage) / 100,
+					yoffset + LOAD_BAR_Y + 20, 5, Blue);
 			}
 		}
 	}
@@ -876,6 +967,11 @@ extern "C" {
 	 * @param percentage Percentage to set (0 - 100).
 	 * @param name File name printed on screen.
 	 */
+	void graphic_setLoadStage(int base, int span) {
+		stageBase = base;
+		stageSpan = span;
+	}
+
 	void graphic_setPercentage(int percentage, const char *name) {
 		if (percentage > 100) {
 			percentage = 100;
@@ -894,6 +990,11 @@ extern "C" {
 		 * paths that need this most. The loaders pass the same pointer on
 		 * every iteration, which is what this is guarding. */
 		static const char *lastName = (const char *) -1;
+
+		/* Into the current stage's slice of the bar. With the default 0/100
+		 * window this is the identity, so a caller outside a boot -- the file
+		 * browser, say -- behaves exactly as before. */
+		percentage = stageBase + ((percentage * stageSpan) / 100);
 
 		if (percentage == loadPercentage && name == lastName) {
 			return;
@@ -1116,7 +1217,6 @@ Menu *graphic_main(void)
 	texSelected = getTexture("selected.rgb");
 	texUnselected = getTexture("unselected.rgb");
 	texPenguin = getTexture("penguin.rgb");
-	texDisc = getTexture("disc.rgb");
 #ifdef NO_BACKDROP
 	/* VRAM bisect aid (make NO_BACKDROP=1). The 731x512 backdrop is 1.5MB of
 	 * the 4MB of VRAM once gsKit rounds its buffer width up to 768, which is
@@ -1562,7 +1662,6 @@ extern "C" {
 		reallocTexture(texSelected);
 		reallocTexture(texUnselected);
 		reallocTexture(texPenguin);
-		reallocTexture(texDisc);
 		reallocTexture(texStarfield);
 		reallocTexture(texTitle);
 		reallocTexture(texBottomBar);

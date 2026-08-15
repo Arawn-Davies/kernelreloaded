@@ -33,6 +33,7 @@
 #include "interrupts.h"
 #include "config.h"
 #include "loader.h"
+#include "bootlog.h"
 #include "graphic.h"
 #include "smem.h"
 #include "smod.h"
@@ -2165,6 +2166,11 @@ static int real_loader(void)
 		error_printf("Stack is unusable!");
 		return -1;
 	}
+	/* Slice the bar between the four things a boot reads, roughly by how long
+	 * each takes: the initrd is several megabytes and dominates, the SBIOS is
+	 * a rounding error. Without this each one swept the bar from empty to full
+	 * in turn, which says nothing about the boot as a whole. */
+	graphic_setLoadStage(0, 10);
 	sbios = load_sbios(&bootpage);
 	if (sbios == NULL) {
 		return -35;
@@ -2187,6 +2193,7 @@ static int real_loader(void)
 		}
 	}
 	if (buffer == NULL) {
+		graphic_setLoadStage(10, 30);
 		buffer = load_kernel_file(kernel_filename, &kernel_size);
 	}
 	if (buffer != NULL) {
@@ -2201,7 +2208,12 @@ static int real_loader(void)
 		}
 
 		/* Check for errors in ELF file. */
-		graphic_setStatusMessage("Checking Kernel...");
+		/* From here the menu is gone and the screen is the loader's own progress.
+	 * Swap the System Info panel for the boot log: what the loader is doing now
+	 * matters more than what the console is. */
+	bootlogBegin();
+
+	graphic_setStatusMessage("Checking Kernel...");
 		if (check_sections("kernel", buffer, kernel_size, 0x10000, lowestAddress, &highest, NULL) != 0) {
 			free(buffer);
 			buffer = NULL;
@@ -2221,6 +2233,7 @@ static int real_loader(void)
 		}
 
 		graphic_setStatusMessage(NULL);
+		graphic_setLoadStage(40, 10);
 		if (loadModules()) {
 			free(buffer);
 			buffer = NULL;
@@ -2247,6 +2260,7 @@ static int real_loader(void)
 			}
 			initrd_size = ((uint32_t) lowestAddress) - ((uint32_t) &initrd_header[2]);
 			kprintf("%d bytes for initrd available.\n", initrd_size);
+			graphic_setLoadStage(50, 50);
 			initrd_start = ((unsigned int) load_file(initrd_filename, &initrd_size, &initrd_header[2]));
 			if (initrd_start != 0) {
 				if (initrd_size != 0) {
