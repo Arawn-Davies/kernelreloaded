@@ -66,10 +66,17 @@ static int expbay_device_probe(void);
 static int expbay_device_reset(void);
 static int expbay_init(void);
 
+/* The probe's answer so far, shared with ps2dev9_probed(). */
+static int probeCached = -1;
+
+int ps2dev9_probed(void)
+{
+	return probeCached;
+}
+
 int ps2dev9_probe(void)
 {
 	USE_DEV9_REGS;
-	static int cached = -1;
 	int hw;
 
 	/* Is there DEV9 hardware at all?
@@ -87,22 +94,22 @@ int ps2dev9_probe(void)
 	 *
 	 * Returns 0x20 (CXD9566 PCMCIA), 0x30 (CXD9611 expansion bay), or 0 for
 	 * nothing recognisable there. */
-	if (cached >= 0) {
-		return cached;
+	if (probeCached >= 0) {
+		return probeCached;
 	}
 
 	hw = DEV9_REG(DEV9_R_REV) & 0xf0;
 	if ((hw != 0x20) && (hw != 0x30)) {
 		hw = 0;
 	}
-	cached = hw;
+	probeCached = hw;
 
 	M_PRINTF("DEV9PROBE: hardware %s (rev & 0xf0 = 0x%02x)\n",
 		(hw == 0x20) ? "CXD9566 PCMCIA" :
 		(hw == 0x30) ? "CXD9611 expansion bay" : "ABSENT",
 		(unsigned int) hw);
 
-	return cached;
+	return probeCached;
 }
 
 int ps2dev9_init()
