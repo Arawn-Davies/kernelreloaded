@@ -113,12 +113,18 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 	},
 	{
+		/* Not in every ROM. The SCPH-10000/15000 "ProtoKernels" predate it --
+		 * their rom0 has no ADDDRV at all, so both the load and the start fail
+		 * (-203). Everything the loader needs still works without it, but the
+		 * queued error forced a pad prompt at "Buffer check" that a console
+		 * with no working pad could never dismiss. Optional: log and carry on. */
 		.path = "rom0:ADDDRV",
 		.buffered = 0,
 		.argLen = 0,
 		.args = NULL,
 		.defaultmod = 1,
 		.debug_mode = -1,
+		.optional = 1,
 	},
 	{
 		.path = "host:eromdrvloader.irx",
@@ -1433,6 +1439,13 @@ int loadModules(void)
 				char *buffer;
 				buffer = load_file(modules[i].path, &modules[i].size, NULL);
 				modules[i].buffer = buffer;
+				if ((buffer == NULL) && modules[i].optional) {
+					/* Absent and allowed to be -- see .optional. Skip it
+					 * rather than tearing down every module loaded so far. */
+					kprintf("Optional module '%s' not present, continuing.\n",
+						modules[i].path);
+					continue;
+				}
 				if (buffer == NULL) {
 					error_printf("Failed to load module '%s'.", modules[i].path);
 
@@ -1529,10 +1542,14 @@ void startModules(struct ps2_bootinfo *bootinfo)
 				rv = SifLoadModule(modules[i].path, modules[i].argLen, modules[i].args);
 			}
 			if (rv < 0) {
-				if (modules[i].eromdrv) {
-					error_printf("Failed to start module \"%s\" (rv = %d).", modules[i].args, rv);
+				const char *what = modules[i].eromdrv ? modules[i].args : modules[i].path;
+
+				if (modules[i].optional) {
+					/* Logged, not queued as an error -- see .optional. */
+					kprintf("Optional module \"%s\" unavailable (rv = %d), continuing.\n",
+						what, rv);
 				} else {
-					error_printf("Failed to start module \"%s\" (rv = %d).", modules[i].path, rv);
+					error_printf("Failed to start module \"%s\" (rv = %d).", what, rv);
 				}
 			}
 		}

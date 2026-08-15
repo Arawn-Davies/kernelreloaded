@@ -47,6 +47,16 @@ extern "C" {
 		int eromdrv;
 		/** 1, if debug mode. 0, load always. -1, no debug mode */
 		int debug_mode;
+		/** 1, if this module is allowed to be missing.
+		 *
+		 * Its absence is then logged and the boot carries on, instead of
+		 * queueing an error message. That distinction matters more than it
+		 * looks: a queued error makes the "Buffer check" stage call
+		 * waitForUser(), which waits on the PAD -- so on a console where pad
+		 * init also fails there is no way to dismiss it and the boot stops
+		 * dead. An optional module that simply is not in this ROM must never
+		 * be able to cause that. */
+		int optional;
 	} moduleEntry_t;
 
 	typedef struct {
