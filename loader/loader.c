@@ -414,6 +414,7 @@ moduleEntry_t modules[] = {
 		.defaultmod = 2,
 		.slim = 1,
 		.network = -1,
+		.dev9 = 1,
 		.debug_mode = -1,
 	},
 	/* ps2smap.irx and ps2link.irx entries removed.
@@ -464,6 +465,7 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 		.defaultmod = 2,
 		.slim = -1,
+		.dev9 = -1,
 		.debug_mode = -1,
 	},
 	{
@@ -472,6 +474,9 @@ moduleEntry_t modules[] = {
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
+		.defaultmod = 2,
+		.slim = 1,
+		.dev9 = -1,
 		.debug_mode = -1,
 	},
 	{
@@ -480,6 +485,9 @@ moduleEntry_t modules[] = {
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
+		.defaultmod = 2,
+		.slim = -1,
+		.dev9 = 1,
 		/* Only hard disc and USB is working. */
 	},
 	{
@@ -490,6 +498,7 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 		.defaultmod = 2,
 		.slim = 1,
+		.dev9 = 1,
 		/* Only hard disc and USB is working. Network not working from EE side (use smaprpc.irx). */
 	},
 	{
@@ -1414,6 +1423,46 @@ moduleEntry_t *getModuleEntry(int idx)
 }
 
 
+/** True when a module's DEV9 requirement is met by the current configuration.
+ *
+ * This cannot be folded into the defaultmod selection in setDefaultConfiguration(),
+ * which is where every other load decision is made: that runs before config.txt is
+ * parsed and so only ever sees enableDev9's built-in default. It is the same reason
+ * the network gate is applied here rather than there. */
+static int dev9Matches(const moduleEntry_t *module)
+{
+	int available;
+
+	if (module->dev9 == 0) {
+		return 1;
+	}
+	/* Probe on a fat, assume present on a slim.
+	 *
+	 * Reading the DEV9 revision register from the EE hangs a slim PSTwo
+	 * outright -- not slowly, not returning nonsense, but dead, wherever in the
+	 * boot it is done. PCSX2 answers 0 and carries on, which is why it took
+	 * hardware to find. Upstream never does it on a slim either: ps2dev9_init()
+	 * sits in the non-slim branch of real_loader() and is guarded by
+	 * enableDev9 && hasNetworkSupport(), so on a slim nothing ever touches that
+	 * register.
+	 *
+	 * Which turns out to match the hardware. A slim has the adapter built in,
+	 * so the chassis really does imply presence and there is nothing to probe
+	 * for. Only a fat is ambiguous -- CXD9611 expansion bay, CXD9566 PCMCIA
+	 * card, or, for most of them, neither -- and that is the case the probe was
+	 * added for.
+	 *
+	 * enableDev9 is tested first and && short-circuits, so a user who has
+	 * turned DEV9 off never reaches the register either. */
+	if (isSlimPSTwo()) {
+		available = loaderConfig.enableDev9;
+	} else {
+		available = loaderConfig.enableDev9 && (ps2dev9_probe() != 0);
+	}
+
+	return module->dev9 == (available ? 1 : -1);
+}
+
 /** Load all IOP modules (from host). */
 int loadModules(void)
 {
@@ -1503,6 +1552,9 @@ void startModules(struct ps2_bootinfo *bootinfo)
 					/* Network not working. */
 					continue;
 				}
+			}
+			if (!dev9Matches(&modules[i])) {
+				continue;
 			}
 			if (modules[i].ps2smap) {
 				modules[i].args = getPS2MAPParameter(&modules[i].argLen);
