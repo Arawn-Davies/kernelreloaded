@@ -15,8 +15,12 @@
 extern "C" {
 #endif
 
-/** Number of lines kept and shown. */
+/** Number of lines kept, and the most that can be shown at once. */
 #define BOOTLOG_LINES 16
+
+/** Longest line held. Wide enough for the worst case the loader prints, the
+ * kernel command line, which is wrapped when drawn rather than truncated. */
+#define BOOTLOG_COLS 128
 
 /** Add text to the log. Splits on newlines; over-long lines are truncated.
  *

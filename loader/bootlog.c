@@ -6,10 +6,6 @@
 
 #include "graphic.h"
 
-/* Wide enough for the longest line the loader actually prints -- the kernel
- * command line is the worst case and is clipped when drawn, not here. */
-#define BOOTLOG_COLS 128
-
 static char lines[BOOTLOG_LINES][BOOTLOG_COLS];
 
 /* Index of the oldest line, and how many are held. Once the buffer is full,

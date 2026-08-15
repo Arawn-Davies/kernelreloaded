@@ -286,6 +286,10 @@ static void applyVideoMode(GSGLOBAL *g, int modeIndex)
 
 	switch (mode) {
 	case GS_MODE_PAL:
+		/* FIELD, not FRAME. FRAME was tried to stop static text shimmering and
+		 * is wrong here: the display reads the buffer at half vertical
+		 * resolution and stretches it, so the whole UI came out squashed to the
+		 * top half of the screen. The shimmer is the price of interlace. */
 		g->Interlace = GS_INTERLACED;
 		g->Field = GS_FIELD;
 		g->Width = 640;
@@ -874,6 +878,50 @@ void graphic_auto_boot_paint(int time)
  *
  * Drawn from primitives rather than a texture: it has to work when the failure
  * being diagnosed might be a texture upload. */
+/* How many characters of s fit in maxw, breaking at a space where there is one.
+ *
+ * Accumulated per character rather than by measuring each candidate prefix,
+ * which would be quadratic in the line length for no better answer -- the
+ * advances are the same either way. */
+static int bootlogFit(const char *s, int maxw)
+{
+	int w = 0;
+	int i = 0;
+	int lastSpace = -1;
+
+	while (s[i] != '\0') {
+		w += fontCharWidth(s[i], FONT_PANEL);
+		if (w > maxw) {
+			break;
+		}
+		if (s[i] == ' ') {
+			lastSpace = i;
+		}
+		i++;
+	}
+	if (s[i] == '\0') {
+		return i;
+	}
+	if (lastSpace > 0) {
+		return lastSpace + 1;
+	}
+	/* No space to break at -- a path or a hex dump. Hard break, but never zero
+	 * characters, or the caller would not advance. */
+	return (i > 0) ? i : 1;
+}
+
+/* Display rows a line needs once wrapped. */
+static int bootlogRows(const char *line, int maxw)
+{
+	int rows = 0;
+
+	while (*line != '\0') {
+		line += bootlogFit(line, maxw);
+		rows++;
+	}
+	return (rows > 0) ? rows : 1;
+}
+
 static void paintBootLog(void)
 {
 	const int x = xoffset + 40;
@@ -882,11 +930,29 @@ static void paintBootLog(void)
 	const int h = 16 + (BOOTLOG_LINES * (fontLineHeight(FONT_PANEL) + 1));
 	int i;
 	int row;
+	int skip;
 
 	/* Border, then the darker field inside it. Two sprites, so the frame is
 	 * whatever is left showing round the edge. */
 	gsKit_prim_sprite(gsGlobal, x, y, x + w, y + h, 2, TexPanelHead);
 	gsKit_prim_sprite(gsGlobal, x + 2, y + 2, x + w - 2, y + h - 2, 3, Black);
+
+	/* Total wrapped rows, so anything past what fits is skipped from the TOP. */
+	{
+		int total = 0;
+
+		for (i = 0; i < bootlogCount(); i++) {
+			const char *l = bootlogLine(i);
+
+			if (l != NULL) {
+				total += bootlogRows(l, w - 16);
+			}
+		}
+		skip = total - BOOTLOG_LINES;
+		if (skip < 0) {
+			skip = 0;
+		}
+	}
 
 	row = y + 8;
 	for (i = 0; i < bootlogCount(); i++) {
@@ -895,11 +961,37 @@ static void paintBootLog(void)
 		if (line == NULL) {
 			break;
 		}
-		/* Clipped, not wrapped: a wrapped line would push an older one off the
-		 * top, and the end of a long path matters less than keeping the
-		 * sequence of stages intact. */
-		fontPrintClipped(x + 8, row, 4, TexInfo, line, w - 16, FONT_PANEL);
-		row += fontLineHeight(FONT_PANEL) + 1;
+		/* Wrapped, not clipped. The kernel command line is the case that
+		 * matters: it is the longest thing the loader prints and its tail --
+		 * init=, ip=, root= -- is the part worth reading, which an ellipsis ate.
+		 *
+		 * Wrapping costs rows, so the oldest lines scroll off the top sooner.
+		 * Rows are counted first and the drawing starts far enough in that the
+		 * NEWEST content always lands inside the window; losing the top of a
+		 * long history is the right trade when the last line is the answer. */
+		{
+			const char *p = line;
+
+			while (*p != '\0') {
+				const int n = bootlogFit(p, w - 16);
+
+				if (skip > 0) {
+					skip--;
+				} else if (row < (y + h - 8)) {
+					char seg[BOOTLOG_COLS];
+					int m = n;
+
+					if (m > (int) sizeof(seg) - 1) {
+						m = sizeof(seg) - 1;
+					}
+					memcpy(seg, p, m);
+					seg[m] = '\0';
+					fontPrint(x + 8, row, 4, TexInfo, seg, FONT_PANEL);
+					row += fontLineHeight(FONT_PANEL) + 1;
+				}
+				p += n;
+			}
+		}
 	}
 }
 
