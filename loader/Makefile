@@ -6,7 +6,7 @@ EE_BIN = $(PROGRAM).elf
 EE_OBJS = $(PROGRAM).o main.o jump.o entry.o exception.o interrupts.o graphic.o cache.o
 EE_OBJS += menu.o menuEntry.o pad.o modules.o rom.o loadermenu.o configuration.o eedebug.o
 EE_OBJS += SMS_SIF.o SMS_CDVD.o SMS_CDDA.o getrte.o getsbios.o getelf.o ps2dev9.o hdd.o
-EE_OBJS += nvram.o kprint.o crc32check.o font.o
+EE_OBJS += nvram.o kprint.o crc32check.o font.o bootlog.o
 EE_LIBS = -lpatches -L$(PS2DEV)/gsKit/lib -lgskit -ldmakit -L$(PS2SDK)/ports/lib 
 EE_LIBS += -lmc -lfileXio -lkbd -lcdvd
 ifneq ($(LIBTIFF),)
@@ -164,7 +164,6 @@ RGB_FILES = \
 	back.rgb \
 	selected.rgb \
 	unselected.rgb \
-	disc.rgb \
 	starfield.rgb \
 	title.rgb \
 	bottombar.rgb \
