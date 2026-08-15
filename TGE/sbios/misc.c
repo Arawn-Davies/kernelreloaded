@@ -167,30 +167,68 @@ int sbcall_getc()
 	return 0;
 }
 
+/* Halt, power off or restart, as the caller asked.
+ *
+ * The mode used to be discarded -- "arg = arg;" and the test commented out --
+ * so every one of the three powered the console off. Linux asks for all three
+ * and means them: reset.c maps machine_restart to SB_HALT_MODE_RESTART,
+ * machine_halt to HALT and machine_power_off to PWROFF. So "reboot" powered
+ * off, and so did a shell exiting into init's restart path, which is what made
+ * leaving the shell look like a shutdown.
+ *
+ * Upstream's KNOWNPROBLEMS.txt PR#26 lists "Menu entry Reboot is not working",
+ * which is the same defect seen from the loader's side.
+ */
 int sbcall_halt(tge_sbcall_halt_arg_t *arg)
 {
 	u32 status;
+	int mode;
 
-	arg = arg;
+	/* Missing argument means the caller could not say; powering off is the
+	 * one outcome that never leaves the machine in a half-dead state. */
+	mode = (arg != NULL) ? arg->mode : TGE_SB_HALT_MODE_POWEROFF;
 
+	/* Quieten DEV9 first, whatever happens next: it is the one device that
+	 * keeps bus-mastering after the EE stops driving it. */
 	_sh(_lh(0xbf80146c) & 0xFFFE, 0xbf80146c);
 	_sh(0, 0xbf801460);
 	_sh(0, 0xbf80146c);
 
-	//if (arg->mode == TGE_SB_HALT_MODE_POWEROFF) {
+	if (mode == TGE_SB_HALT_MODE_RESTART) {
+		/* Back to the BIOS entry point, the same address get_romgscrt() reads
+		 * the first ROMDIR from. There is no kernel left to ask for anything
+		 * politer: kernelloader overwrote it, so LoadExecPS2() and the reboot
+		 * IOP module are both long gone by now.
+		 *
+		 * Interrupts off and both caches settled first -- the jump leaves this
+		 * address space behind entirely, and a dirty line written back
+		 * afterwards would land in whatever the BIOS has since put there. */
+		core_save_disable(&status);
+		flushDCacheAll();
+		invalidateICacheAll();
+
+		((void (*)(void)) 0xBFC00000)();
+
+		/* Not reached. If it ever is, fall through and stop rather than
+		 * running on into whatever follows. */
+	}
+
+	if (mode == TGE_SB_HALT_MODE_POWEROFF) {
 #ifdef NEW_ROM_MODULE_VERSION
 		u32 result;
-		
+
 		if (cdPowerOff(&result) == 0) {
 			printf("Power off failed.\n");
 		}
-
 #endif
 		/* Power off manually. */
 		_sb(0, 0xBF402017); /* SCMD */
 		_sb(0xF, 0xBF402016); /* SCMD Power off */
-	//}
+	}
 
+	/* HALT, and the fall-through for anything that did not take: stop the
+	 * processor but leave the console powered, which is what Linux has just
+	 * told the user to expect -- "You can safely turn off the power". */
 	core_save_disable(&status);
 	while (1) {
 		/* Stop system or wait until reset. */
