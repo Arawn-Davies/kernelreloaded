@@ -157,6 +157,14 @@ What works, as of 2026-08-16:
   PCSX2. On hardware `bash` runs on the GS framebuffer console with a USB
   keyboard, with the full shared library set — `ld.so.1`, `libc`, `libncurses`,
   `libdl`. Confirmed on an SCPH-70003.
+- **A phat boots too, since 2026-08-16** — SCPH-30003R, PAL, network adapter
+  fitted, booting from USB. It needs **`EnableDev9=0`** in `config.txt`: the
+  EE-side DEV9 register read hangs that console, and 0 is the only setting that
+  reaches neither the probe nor `ps2dev9_init()`. See "Debugging on hardware".
+  Two loader bugs stood in the way and are fixed — `ps2dev9.irx` was selected
+  on the wrong axis so a phat with an adapter started the DEV9 interrupt relay
+  without its driver, and `dev9Matches()` probed DEV9 hardware from inside
+  `startModules()`.
 - **Under PCSX2 it needs `tools/pcsx2/ee-tlb-fixes.patch`** — seven emulator
   bugs, six in the EE MMU and one in BIOS-syscall emulation. Stock PCSX2 stops
   dead at `Freeing unused kernel memory` in an endless TLB refill loop.
@@ -173,23 +181,64 @@ Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel
 and initrd have to be loaded from `host:` or a card. See the end of
 `docs/emulator-testing.md` — including what was already tried and reverted.
 
+**`reboot` needs a power cycle on hardware.** `ab86e9e` fixed `sbcall_halt()`
+discarding its mode — all three of halt, power off and restart used to power the
+console off, which is upstream's `KNOWNPROBLEMS.txt` PR#26 from the other side.
+Restart now jumps to the BIOS entry at `0xBFC00000`, and under PCSX2 that works
+because the fork turns the jump into a full VM reset. On a real console it
+restarts the EE while the IOP still holds Linux's state, and the result is a
+black screen. Finishing it means issuing the `SifIopReset` sequence — a SIF DMA
+reset packet plus the SMFLAG, RPCINIT and SUBADDR writes — from TGE, which
+today has no SIF access of any kind. Confirmed on the SCPH-30003R.
+
 Open, unstarted: a mode change that the display cannot sync to leaves a black
 screen with no way back (`gsKit_init_screen()` is applied with no confirmation
-or timeout — it wants the monitor-style revert-after-N-seconds); exiting minish
-powers off rather than reboots, which upstream's `KNOWNPROBLEMS.txt` PR#26
-suggests predates us; and there is no DHCP, so the System Info panel's IP row
-shows `getMyIP()`'s 192.168.0.10 default rather than a real lease.
+or timeout — it wants the monitor-style revert-after-N-seconds); and there is no
+DHCP, so the System Info panel's IP row shows `getMyIP()`'s 192.168.0.10 default
+rather than a real lease.
 
 ## Debugging on hardware
 
-**Never read the DEV9 revision register from the EE on a slim PSTwo.** It hangs
-the console dead — not slowly, not returning nonsense — wherever in the boot it
-is done: cold, after `ps2dev9.irx` has started, or from the paint path. PCSX2
-answers 0 and carries on, so none of it is visible under emulation, and it was
-reached three separate ways before being understood. Upstream never does it on
-a slim either: `ps2dev9_init()` sits in the non-slim branch of `real_loader()`.
-That is the correct design, not an oversight — a slim has the adapter built in,
-so only a fat is ambiguous. `dev9Matches()` in `loader.c` carries the detail.
+**Never read the DEV9 revision register from the EE. Not on a slim, and not on
+a phat either.** It hangs the console dead — not slowly, not returning nonsense
+— wherever in the boot it is done: cold, after `ps2dev9.irx` has started, or
+from the paint path. PCSX2 answers 0 and carries on, so none of it is visible
+under emulation.
+
+This was first found on a slim and written up as a slim problem, on the
+reasoning that a slim has the adapter built in so only a phat is ambiguous and
+worth probing. An SCPH-30003R disproved that on 2026-08-16: the same read hangs
+it too. `dev9Matches()` therefore probes nothing at all now — it consults
+`ps2dev9_probed()`, the cached answer, and a phat falls through to DEV9-absent
+and the `intrelay-direct` path, which is what upstream and rickgaiser's fork
+both do anyway.
+
+The only EE-side read left is upstream's own `ps2dev9_init()`, in the non-slim
+branch of `real_loader()` and guarded by `enableDev9`. On a phat that cannot
+survive it, **`EnableDev9=0` in `config.txt` is the answer**: it skips both that
+call and everything downstream of it. The cost is `bootinfo.pccard_type`, which
+`arch/mips/ps2/setup.c` turns into `ps2_pccard_present` — so Linux sees no HDD
+and no ethernet, and networking on such a console would have to come from
+IOP-side `smaprpc` the way rickgaiser does it.
+
+**Where a hardware probe is called matters as much as whether.** `dev9Matches()`
+is evaluated at the top of `startModules()`' loop, *before* the
+`graphic_setStatusMessage()` and `kprintf()` that name the module. So when it
+hung, the boot log stopped on whatever module happened to load last, and
+disabling modules made the hang appear to move earlier — poweroff.irx, then
+`rom1:SDRDRV`, then `rom0:PADMAN` — when it was the same instruction every
+time. Three boots were spent gating innocent modules before the loop was read.
+If a log line names the last thing that *succeeded* rather than the thing that
+failed, suspect the code between the two.
+
+**ps2link cannot log a boot.** It is an IOP module, and `real_loader()` calls
+`SifIopReset()` about a second in, so the forwarder dies long before anything
+interesting happens. `ps2client execee host:kloader.elf` is still worth having
+— it puts a new build on the console without touching the USB stick — but
+expect zero output. Build `ps2client` from `ps2dev/ps2client` on the host:
+the copy inside the container is musl-linked and will not run on a glibc host,
+and Docker Desktop's VM cannot route to the LAN, so `--network host` is not a
+way round it.
 
 `kprintf()` goes to SIO, which needs a hardware modification to read, so the
 loader draws its last 16 lines in a panel during the load (`loader/bootlog.c`).
