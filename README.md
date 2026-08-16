@@ -214,6 +214,16 @@ stick via wLaunchELF: kernelloader built on gcc 15 hands off to a 2001
 MontaVista 2.4.17 kernel, the initrd unpacks, USB enumerates as a SCSI device,
 and userspace comes up at a prompt.
 
+**And on a phat, since 2026-08-16** — an SCPH-30003R with a network adapter,
+also from USB. That took two loader fixes and one config line. `ps2dev9.irx` was
+selected on the ROM-generation axis rather than on whether DEV9 exists, so a
+phat *with* an adapter started the DEV9 interrupt relay without its driver and
+the IOP refused it; and `dev9Matches()` probed DEV9 hardware from inside
+`startModules()`, which hangs that console outright. The config line is
+**`EnableDev9=0`**, because the EE-side DEV9 register read is not survivable
+there at all — see [`CLAUDE.md`](CLAUDE.md) under "Debugging on hardware". The
+cost is that Linux sees no HDD and no ethernet on such a console.
+
 **And under PCSX2**, once the emulator is fixed. Stock PCSX2 gets as far as
 `Freeing unused kernel memory` and stops dead — the EE MMU is the
 least-exercised path in the emulator and the first thing Linux leans on. Seven
@@ -251,13 +261,15 @@ serve both slots and are loaded two entries earlier, so it needs no extra module
 loading and no reordering. MC1 also gains the Load/Save/Delete menu entries it
 never had.
 
-### Three bugs only real hardware could find
+### Five bugs only real hardware could find
 
 Each of these passed under PCSX2 and failed on a console, for structural
 reasons rather than bad luck:
 
 | Fault | Why the emulator missed it |
 |---|---|
+| Reading `DEV9_R_REV` from the EE hangs the console | PCSX2 answers 0 and carries on. Found on a slim, assumed to be a slim-only trait because a slim has the adapter built in and only a phat looked worth probing — then an SCPH-30003R hung the same way. Nothing probes DEV9 from the EE any more. |
+| `ps2dev9.irx` gated on ROM generation, the DEV9 relay on DEV9 presence | The two axes only disagree on a phat *with* an adapter, so the relay started without its driver and the IOP returned `-200`. Reproducing it in PCSX2 needs `EthEnable = true` under `[DEV9/Eth]`; without that the emulator reports DEV9 absent and takes the `intrelay-direct` path. |
 | `intrelay` and `smaprpc` loaded from `host:` | PCSX2 resolves `host:` to the directory the ELF came from, so both quietly succeeded. On a console booted from USB there is no `host:` at all. `intrelay` is now embedded in the ELF; `smaprpc` no longer exists anywhere and its entry is gone. |
 | `CDDA_Exit()` hangs the boot | It issues a *blocking* `SifCallRpc` waiting for an SMSCDVD acknowledgement that never arrives. Needs a real IOP that declines to answer. Skipped at all three call sites — the `SifIopReset()` that follows each discards the module regardless. |
 | EROM driver failure raised a blocking error screen | Only reachable when `rom1` is present, which the first test BIOS lacked. DVD-Video is optional and now degrades to a log line. |
