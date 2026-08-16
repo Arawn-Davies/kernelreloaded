@@ -97,6 +97,10 @@ int main(int argc, char **argv)
 	}
 
 
+	/* First thing in the log, so a photograph of a hung screen still says which
+	 * build is hung -- the ring buffer holds the last 16 lines, but this also
+	 * goes to the panel's Loader row, which does not scroll. */
+	kprintf("kloader " LOADER_VERSION " (%s)\n", loaderBuildStamp);
 	sio_printf("kloader started\n");
 
 	if (debug_mode == -1) {

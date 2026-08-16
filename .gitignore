@@ -146,3 +146,7 @@ loader/title.png
 # Downloaded BlackRhino Live DVD and the DISC.BIN extracted from it. Fetched by
 # tools/get-blackrhino-disc.sh; large, and not ours to redistribute.
 dist/blackrhino-live/
+
+# Generated on every build by loader/Makefile: names the tree the ELF came
+# from. Never tracked -- it would conflict on every single build.
+loader/buildstamp.c
