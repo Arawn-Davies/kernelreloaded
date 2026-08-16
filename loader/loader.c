@@ -380,12 +380,28 @@ moduleEntry_t modules[] = {
 		.debug_mode = -1,
 	},
 	{
+		/* The DEV9 driver, selected by whether DEV9 exists -- not by which
+		 * generation of ROM modules the console uses.
+		 *
+		 * It was .defaultmod = 1 with .slim = 1, and defaultmod 1 selects on
+		 * moduletype, which loadermenu.cpp sets to -1 for a phat. So the
+		 * driver was skipped on every phat, while intrelay-dev9.irx next door
+		 * is .defaultmod = 2 with .dev9 = 1 and is chosen whenever DEV9 is
+		 * present. On a phat with an adapter fitted the two disagreed: the
+		 * relay was started, its imports could not resolve without the driver,
+		 * and the IOP refused it with -200. That is the SCPH-30003R failure,
+		 * reproduced under PCSX2 with EthEnable=true.
+		 *
+		 * .slim = 0 loads it on either chassis; dev9Matches() then filters on
+		 * .dev9, so it loads exactly when the relay that needs it does. A slim
+		 * is unaffected -- DEV9 is assumed present there, so it still loads. */
 		.path = "host:ps2dev9.irx",
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
-		.defaultmod = 1,
-		.slim = 1,
+		.defaultmod = 2,
+		.slim = 0,
+		.dev9 = 1,
 		.debug_mode = -1,
 	},
 	{
@@ -1461,28 +1477,41 @@ static int dev9Matches(const moduleEntry_t *module)
 	if (module->dev9 == 0) {
 		return 1;
 	}
-	/* Probe on a fat, assume present on a slim.
+	/* NEVER touch DEV9 hardware from here.
 	 *
-	 * Reading the DEV9 revision register from the EE hangs a slim PSTwo
-	 * outright -- not slowly, not returning nonsense, but dead, wherever in the
-	 * boot it is done. PCSX2 answers 0 and carries on, which is why it took
-	 * hardware to find. Upstream never does it on a slim either: ps2dev9_init()
-	 * sits in the non-slim branch of real_loader() and is guarded by
-	 * enableDev9 && hasNetworkSupport(), so on a slim nothing ever touches that
-	 * register.
+	 * This function used to call ps2dev9_probe() on a fat, which reads
+	 * DEV9_R_REV from the EE. That hung an SCPH-30003R stone dead, and took
+	 * three boots to see because of *where* it hangs: this runs at the top of
+	 * startModules()' loop, before the graphic_setStatusMessage() and kprintf()
+	 * that name the module. So the boot log stops on whatever module happened
+	 * to load last, and disabling modules appears to move the hang earlier when
+	 * in fact it never moves at all. It sat behind poweroff.irx, then
+	 * rom1:SDRDRV, then rom0:PADMAN, and was the same instruction every time.
 	 *
-	 * Which turns out to match the hardware. A slim has the adapter built in,
-	 * so the chassis really does imply presence and there is nothing to probe
-	 * for. Only a fat is ambiguous -- CXD9611 expansion bay, CXD9566 PCMCIA
-	 * card, or, for most of them, neither -- and that is the case the probe was
-	 * added for.
+	 * It is also badly placed even when it works. ps2dev9_probe()'s own comment
+	 * says it was split out "so it can be asked before the IOP modules are
+	 * chosen" -- but dev9Matches() is only ever called from startModules(),
+	 * which real_loader() runs *after* SifIopReset(). A hardware probe that
+	 * needs to happen before the modules are picked cannot live in the loop
+	 * that picks them.
 	 *
-	 * enableDev9 is tested first and && short-circuits, so a user who has
-	 * turned DEV9 off never reaches the register either. */
+	 * So: consult the cached answer only. ps2dev9_probed() returns -1 when
+	 * nothing has probed yet, which is the case on every boot today, and -1 is
+	 * not > 0, so a fat falls through to "DEV9 absent" and takes the
+	 * intrelay-direct path. That is upstream's behaviour and rickgaiser's --
+	 * neither of them auto-selects the DEV9 relay on a fat -- so the fallback
+	 * is the known-good configuration rather than a guess.
+	 *
+	 * If a probe is ever wired in somewhere legitimate (before the IOP reset,
+	 * and only on a fat), this picks the answer up with no change here.
+	 *
+	 * A slim still needs no probe at all: the adapter is built in, so the
+	 * chassis implies presence, and reading that register on a slim is the
+	 * hang this project already documented. */
 	if (isSlimPSTwo()) {
 		available = loaderConfig.enableDev9;
 	} else {
-		available = loaderConfig.enableDev9 && (ps2dev9_probe() != 0);
+		available = loaderConfig.enableDev9 && (ps2dev9_probed() > 0);
 	}
 
 	return module->dev9 == (available ? 1 : -1);
@@ -1584,6 +1613,15 @@ void startModules(struct ps2_bootinfo *bootinfo)
 			if (modules[i].ps2smap) {
 				modules[i].args = getPS2MAPParameter(&modules[i].argLen);
 			}
+
+			/* Name the module before starting it, the way the startup loader
+			 * does. Without this the whole loop reports "Starting modules" and
+			 * nothing else, so a hang here says only "somewhere in the Linux
+			 * module set" -- which on a fat with an adapter is a dozen
+			 * candidates, several of them DEV9. The startup loop has named its
+			 * modules all along; this one never did. */
+			graphic_setStatusMessage(modules[i].path);
+			kprintf("Starting module (%s)\n", modules[i].path);
 			if (modules[i].buffered) {
 				int ret;
 
