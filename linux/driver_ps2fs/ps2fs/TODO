@@ -1,3 +1,0 @@
-df values are wrong
-stat doesn't return right number of blocks? (should round up to multiple of 8k)
-use __u32 instead of unsigned long
