@@ -50,31 +50,48 @@ on 2026-08-13; the root went from 37 tracked entries to 18.
 | `RTE/` | Sony's SBIOS, built only if the Linux Kit disc is mounted |
 | `iop/` | every IOP module: `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader`. Its `Makefile` builds all six; they were four separate `make -C` lines at the root |
 | `include/` | the two headers shared between EE and IOP sides |
-| `linux/` | **everything about the guest OS, nothing about the loader** — `patches/` (upstream's Linux patch set), `kernelconfig`, `phase1/` (our from-source kernel build), the three `driver_*` trees, `buildlinux.sh`, `buildtoolchain.sh` |
+| `linux/` | **submodule** → [`ps2linux`](https://github.com/Arawn-Davies/ps2linux). Everything about the guest OS and nothing about the loader: the Linux patch set, `kernelconfig`, `phase1/` (our from-source kernel build), the three `driver_*` trees |
 | `tools/` | host-side helpers: `bin2s` (POSIX sh replacement for a tool modern ps2sdk dropped), `crc32gen`, `png2rgb`, `ppm2rgb`, `hello`, `pcsx2/`, the deploy scripts |
+| `tools/ps2facts/` | **submodule** → [`ps2facts`](https://github.com/Arawn-Davies/ps2facts). Asks a console what it is and prints the answers; useful well beyond this project, hence its own repo |
 | `assets/` | shipped textures; `assets/src/` holds unshipped source artwork; `assets/mcicons/` the memory-card icon |
 | `docs/` | internals, build-environment, porting-notes; `docs/upstream/` holds upstream's own `readme.txt`, `install.txt`, `history.txt`, `TODO.txt` and `KNOWNPROBLEMS.txt` |
 
-**This was a git submodule until 2026-08-12, then briefly a nested `loader/`
-wrapper. It is neither now.** Upstream (citronalco/kernelloader) has been dead
-since 2017 and nothing here can be pushed to it, so a submodule pointer only
-ever referenced commits that existed on one machine — cloning got an empty
-directory and GitHub's link 404'd. The old
-`patches/0001-modern-toolchain.patch` is gone too; its changes are in the
-source, and its content survives in history at `708c8ff`.
+**The loader source itself was a submodule until 2026-08-12, then briefly a
+nested `loader/` wrapper. It is neither now, and must not become either
+again.** Upstream (citronalco/kernelloader) has been dead since 2017 and
+nothing here can be pushed to it, so that pointer only ever referenced commits
+that existed on one machine — cloning got an empty directory and GitHub's link
+404'd. The old `patches/0001-modern-toolchain.patch` is gone too; its changes
+are in the source, and its content survives in history at `708c8ff`.
 
-**Do not re-add a submodule, a `.gitmodules`, a patch-application step, or a
-wrapper directory.**
+**Do not re-add a submodule for the loader source, a patch-application step, or
+a wrapper directory.** `Makefile`, `kernel/`, `TGE/`, `loader/`, `iop/` and
+`include/` are this repo and stay in it.
 
-That includes splitting `linux/` out into a repo of its own, which looks
-tempting now that it is one directory. It is coupled to this tree, not merely
-adjacent: `linux/phase1/patches/romcons-input.patch` exists because TGE
-implements `SB_PUTCHAR` as `sio_putc()`, so a change to SBIOS call numbering is
-a change to that patch. Across a submodule boundary that is two commits and a
-pointer bump, and `git bisect` can no longer cross the seam that broke you. The
-whole pitch is `git clone && ./build.sh`. If the kernel ever becomes a shipped
-artifact with consumers other than this loader, `linux/` is the seam — and
-large binaries want a GitHub Release attachment, not a submodule or LFS.
+**`linux/` and `tools/ps2facts/` are the two exceptions, added on 2026-08-16.**
+An earlier version of this file forbade splitting `linux/` out at all. That was
+wrong for the reason kernelloader itself demonstrates: upstream never tracked a
+kernel tree either — `buildlinux.sh` downloaded the source and patched it,
+exactly as `phase1/build-kernel.sh` still does. Carrying the patch set next to
+the loader was our addition, and it put 8,000 lines of `unitable.h` in a repo
+whose build never reads a byte of it. The objection that mattered — that these
+pointers would reference commits on one machine — does not apply, because both
+are pushed and public.
+
+**The coupling that argued against it is real and did not go away.**
+`linux/phase1/patches/romcons-input.patch` exists because TGE implements
+`SB_PUTCHAR` as `sio_putc()`, so renumbering SBIOS calls in `TGE/` is a change
+to that patch — now two commits in two repos and a pointer bump, and `git
+bisect` no longer crosses that seam on its own. Both sides say so in their
+docs. Treat any SBIOS call-numbering change as a cross-repo change, and expect
+to bisect the two halves separately.
+
+Clone with `--recurse-submodules`, or `git submodule update --init` after the
+fact. `./build.sh` does not read `linux/` at all, so a forgotten submodule
+breaks the kernel build, never the loader build.
+
+Large built artifacts — a `vmlinux`, an initrd — belong on a GitHub Release,
+not in either repo and not in LFS.
 
 ## Build
 
@@ -204,9 +221,17 @@ kernel change is involved -- it is simply what Linux is told.
 **The memory has to actually exist.** Under PCSX2 that means `ExtraMemory=true`,
 which maps the 128MB T10K devkit layout; 64 sits inside it. A retail console has
 32MB and nothing else, and told otherwise the kernel hands out pages that are
-not there. Hence the opt-in flag and the `kprintf` on every boot: a default
-build cannot carry the lie onto hardware by accident. Blank the variable for a
-stock build.
+not there.
+
+**It is not opt-in, whatever an earlier version of this file said.**
+`config.mk` ships `FAKE_EXTRA_RAM = 64`, so a plain `./build.sh` produces a
+loader that tells a retail console it has 64MB. The `kprintf` on every boot is
+the only guard, and a guard you have to read is not a default. For hardware,
+build with the variable blanked:
+
+```sh
+./build.sh FAKE_EXTRA_RAM=
+```
 
 Boots as `On node 0 totalpages: 16383`, i.e. 16383 x 4K = 64MB, against
 `25268k/32764k` before.

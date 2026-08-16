@@ -92,13 +92,16 @@ toolchain work was for — and it now does.
 This tree started as **[citronalco/kernelloader](https://github.com/citronalco/kernelloader)**,
 not rickgaiser's.
 
-It was a git submodule until August 2026. That is gone: upstream has been dead
-since 2017 and nothing here can be pushed to it, so the pointer only ever
-referenced commits that existed on one machine — a clone got an empty directory
-and GitHub's submodule link 404'd. The source is now tracked directly, and the
-modern-toolchain patch that used to be applied at build time is simply part of
-it. That patch's final form survives in history at `708c8ff` if you want to see
-the delta against pristine upstream in one piece.
+The loader source was a git submodule until August 2026. That is gone: upstream
+has been dead since 2017 and nothing here can be pushed to it, so the pointer
+only ever referenced commits that existed on one machine — a clone got an empty
+directory and GitHub's submodule link 404'd. The source is now tracked
+directly, and the modern-toolchain patch that used to be applied at build time
+is simply part of it. That patch's final form survives in history at `708c8ff`
+if you want to see the delta against pristine upstream in one piece.
+
+(`linux/` and `tools/ps2facts/` *are* submodules, added later for a different
+reason and pointing at repositories that actually exist. See Layout.)
 
 Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
 issues, not archived — just abandoned. Of its seven forks, only citronalco's has
@@ -116,8 +119,14 @@ booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 
 ## Layout
 
-The kernelloader source *is* this repo — no submodule, no wrapper directory, so
-`make` at the root just works and there is exactly one source tree.
+The kernelloader source *is* this repo — no wrapper directory, so `make` at the
+root just works and there is exactly one source tree for the loader.
+
+Two directories are submodules, because what is in them is useful without the
+loader: `linux/` is the guest-OS patch set, and `tools/ps2facts/` identifies a
+console. Clone with `--recurse-submodules`, or run `git submodule update
+--init` afterwards. `./build.sh` reads neither, so forgetting them costs you the
+kernel build and the fact-finder, never the loader.
 
 | Path | What it is |
 |---|---|
@@ -126,8 +135,9 @@ The kernelloader source *is* this repo — no submodule, no wrapper directory, s
 | `TGE/` | the SBIOS Linux calls for all I/O; `TGE/iop/intrelay/` builds the intrelay IRXs |
 | `RTE/` | Sony's SBIOS, built only when the Linux Kit disc is mounted |
 | `iop/` | the six IOP modules — `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader` |
-| `linux/` | everything about the **guest OS**: upstream's `patches/`, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
+| `linux/` | **submodule → [ps2linux](https://github.com/Arawn-Davies/ps2linux)** — everything about the **guest OS**: upstream's patch set, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
 | `tools/` | host-side helpers — `crc32gen`, `png2rgb`, `ppm2rgb`, `bin2s`, the `pcsx2/` patches, deploy scripts |
+| `tools/ps2facts/` | **submodule → [ps2facts](https://github.com/Arawn-Davies/ps2facts)** — asks a console what it is: ROM version, silicon revisions, DEV9, MechaCon, the full ROMDIR, and which IOP modules a loader would pick |
 | `assets/` | shipped artwork; `assets/src/` holds unshipped sources |
 | `docs/` | the documents above; `docs/upstream/` keeps upstream's own `readme.txt` and friends |
 
