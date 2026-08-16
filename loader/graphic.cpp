@@ -812,7 +812,19 @@ void graphic_common(void)
 			 * ran straight into its own value ("DVD-Videono"). */
 			PANEL_ROW("Network", hasNetworkSupport() ? "yes" : "no");
 			PANEL_ROW("DVD-Video", isDVDVSupported() ? "yes" : "no");
-			PANEL_ROW("Loader", LOADER_VERSION);
+			/* Version and build identity share one row on purpose. The panel
+			 * already reaches far enough down to have collided with the block
+			 * top right once; an eleventh row would push it further for
+			 * information that fits here. */
+			{
+				static char loaderRow[48];
+
+				if (loaderRow[0] == 0) {
+					snprintf(loaderRow, sizeof(loaderRow), "%s %s",
+						LOADER_VERSION, loaderBuildId);
+				}
+				PANEL_ROW("Loader", loaderRow);
+			}
 		}
 #undef PANEL_ROW
 	}

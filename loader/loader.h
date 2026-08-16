@@ -92,6 +92,12 @@ extern "C" {
 	void DelayThread(int delay);
 	const char *getPcicType(void);
 
+	/* Generated into buildstamp.c by loader/Makefile on every build.
+	 * loaderBuildId is the git description alone ("ab86e9e", "ab86e9e+" when
+	 * the tree was dirty); loaderBuildStamp appends the UTC build time. */
+	extern const char loaderBuildId[];
+	extern const char loaderBuildStamp[];
+
 	extern char iop_reset_param[];
 	extern int debug_mode;
 	extern int do_default_sbios_calls;
