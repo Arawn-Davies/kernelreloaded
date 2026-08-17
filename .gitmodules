@@ -1,8 +1,8 @@
 [submodule "linux"]
 	path = linux
 	url = https://github.com/Arawn-Davies/ps2linux.git
-[submodule "tools/ps2facts"]
-	path = tools/ps2facts
+[submodule "ps2facts"]
+	path = ps2facts
 	url = https://github.com/Arawn-Davies/ps2facts.git
 [submodule "whiterhino"]
 	path = whiterhino

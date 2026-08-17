@@ -51,8 +51,8 @@ on 2026-08-13; the root went from 37 tracked entries to 18.
 | `iop/` | every IOP module: `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader`. Its `Makefile` builds all six; they were four separate `make -C` lines at the root |
 | `include/` | the two headers shared between EE and IOP sides |
 | `linux/` | **submodule** → [`ps2linux`](https://github.com/Arawn-Davies/ps2linux). Everything about the guest OS and nothing about the loader: the Linux patch set, `kernelconfig`, `phase1/` (our from-source kernel build), the three `driver_*` trees |
+| `ps2facts/` | **submodule** → [`ps2facts`](https://github.com/Arawn-Davies/ps2facts). Asks a console what it is and prints the answers; useful well beyond this project, hence its own repo |
 | `tools/` | host-side helpers: `bin2s` (POSIX sh replacement for a tool modern ps2sdk dropped), `crc32gen`, `png2rgb`, `ppm2rgb`, `hello`, `pcsx2/`, the deploy scripts |
-| `tools/ps2facts/` | **submodule** → [`ps2facts`](https://github.com/Arawn-Davies/ps2facts). Asks a console what it is and prints the answers; useful well beyond this project, hence its own repo |
 | `whiterhino/` | **submodule** → [`pcsx2-whiterhino`](https://github.com/Arawn-Davies/pcsx2-whiterhino), branch `whiterhino` (the repo's default; upstream's inherited `master` was dropped, since nothing here tracks it). A PCSX2 fork carrying WhiteRhino: EE TLB/MMU accuracy work, and `kload`/`dload`, two ways to boot PS2 Linux without a real console. `kload` embeds this repo's own `kloader.elf`, built fresh at `whiterhino/`'s build time — see `whiterhino/tools/build-windows.ps1` and `whiterhino/tools/build-kloader-resource.sh` |
 | `assets/` | shipped textures; `assets/src/` holds unshipped source artwork; `assets/mcicons/` the memory-card icon |
 | `docs/` | internals, build-environment, porting-notes; `docs/upstream/` holds upstream's own `readme.txt`, `install.txt`, `history.txt`, `TODO.txt` and `KNOWNPROBLEMS.txt` |
@@ -69,8 +69,12 @@ are in the source, and its content survives in history at `708c8ff`.
 a wrapper directory.** `Makefile`, `kernel/`, `TGE/`, `loader/`, `iop/` and
 `include/` are this repo and stay in it.
 
-**`linux/`, `tools/ps2facts/` and `whiterhino/` are the three exceptions, the
-first two added on 2026-08-16 and the third on 2026-08-17.** An earlier version
+**`linux/`, `ps2facts/` and `whiterhino/` are the three exceptions, the
+first two added on 2026-08-16 and the third on 2026-08-17.** `ps2facts/` moved
+here from `tools/ps2facts/` on 2026-08-18, to sit next to the other two
+submodules instead of being the one nested a level deeper for no reason other
+than history — it shares their exact status (its own repo, pushed and public)
+and nothing reads it from inside `tools/`. An earlier version
 of this file forbade splitting `linux/` out at all. That was wrong for the
 reason kernelloader itself demonstrates: upstream never tracked a kernel tree
 either — `buildlinux.sh` downloaded the source and patched it, exactly as
