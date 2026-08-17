@@ -148,9 +148,59 @@ int main(int argc, char **argv)
 	/* Disable debug output at startup. */
 	loaderConfig.enableEEDebug = 0;
 
-	/* Setup graphic screen. */
+	/* Setup graphic screen. graphic_main() still builds one root Menu
+	 * object (needed for gsGlobal/font/texture bring-up either way, see its
+	 * own comment) but that object is never populated or shown below in the
+	 * INSTANT_BOOT_DEFAULT build -- only initMenu() does that, and this
+	 * build never calls it. */
 	menu = graphic_main();
 
+#ifdef INSTANT_BOOT_DEFAULT
+	/* No menu is ever shown or navigated in this build -- config.txt's
+	 * AutoBootTime is always -1 for it (see PS2KLoad::Stage()'s own
+	 * comment) so the interactive countdown/menu loop below never runs
+	 * either way. Skip building it at all: registerLoaderConfigItems()
+	 * alone is what config.txt parsing (modules.c's loadConfiguration())
+	 * actually needs, and boots straight through to loader() once modules
+	 * are up. */
+	registerLoaderConfigItems();
+
+	/* Not cosmetic: populates romver/ps2_rom_version, which nvram.c's
+	 * getBiosVersion() callers use for console-generation/region detection
+	 * during module loading below. The normal build runs this before
+	 * initMenu() for the same reason -- ps2_rom_version's Versions-menu
+	 * display is incidental, not the point. */
+	checkROMVersion();
+
+	loadLoaderModules(debug_mode, disable_cdrom);
+
+	if (do_default_sbios_calls) {
+		defaultSBIOSCalls(NULL);
+	}
+
+	initializeController();
+
+	PS2KbdInit();
+
+	kprintf("argc %d\n", argc);
+	for (i = 0; i < argc; i++) {
+		kprintf("argv[%d] = %s\n", i, argv[i]);
+	}
+
+	loader(NULL);
+
+	/* loader() only returns on failure -- a successful boot jumps into the
+	 * kernel and never comes back here. There is no menu tree in this build
+	 * to fall back into (that is the whole point of INSTANT_BOOT_DEFAULT),
+	 * so unlike the normal build below, this halts here instead: the
+	 * bootlog panel already has the last kprintf() naming what went wrong,
+	 * and kload is host-driven (PCSX2/WhiteRhino), not a person at a pad
+	 * who could navigate a recovery menu anyway. */
+	kprintf("loader() failed, halting.\n");
+	while (1) {
+		graphic_paint();
+	}
+#else
 	lastValidMenu = menu;
 
 	/* Disable menu until start up. */
@@ -494,6 +544,7 @@ int main(int argc, char **argv)
 		}
 
 	} while (1);
+#endif /* INSTANT_BOOT_DEFAULT */
 
 	/* not reached! */
 	return 0;
