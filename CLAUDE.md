@@ -328,7 +328,7 @@ nothing.
 `png2rgb` accepts **only** 24-bit RGB or 32-bit RGBA, and inverts alpha as
 `0x80 - alpha`. GS limits: max texture 1024×1024, 4 MB VRAM. Output is
 640×448 (NTSC) / 640×512 (PAL) / 640×480 (VGA) — about 2.3× coarser than
-`assets/mockup.png` suggests.
+`assets/src/mockup.png` suggests. A real screenshot is in the README.
 
 Current: `starfield.png` 731×512 RGB (replaced the original clouds),
 `penguin.png` 128×128 RGBA. `loader/graphic.cpp` refers to `texStarfield` /

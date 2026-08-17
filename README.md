@@ -6,25 +6,25 @@ the PlayStation 2 Linux bootloader** — building again on a modern toolchain.
 <sub>Looking for <i>kernelloader ps2 build</i>, <i>kernelloader modern
 toolchain</i>, or <i>ps2 linux bootloader</i>? You're in the right place.</sub>
 
-![KernelReloaded UI design target](assets/src/mockup.png)
+![KernelReloaded boot menu, PCSX2/whiterhino, SCPH-30003R BIOS](assets/src/screenshot-boot-menu.png)
 
-> **A design target, not a screenshot.** The starfield and Tux are real and in
-> the build; the rest is where the UI is headed. What that costs splits neatly
-> in two:
+> **A real screenshot**, not the [design mockup](assets/src/mockup.png) this
+> used to be — PCSX2 running `bin/kloader.elf` straight, with no config.txt,
+> vmlinux or initrd anywhere it searches, so what's on screen is exactly the
+> loader's own boot menu, chrome and all. The `System Info` panel is live: it
+> queried the emulated console for its own model, chassis and region.
 >
-> **Artwork alone** gets the title lockup, the rounded menu highlight, the
-> System Info panel and the ×/△/○ glyphs — each becomes a texture drawn with
-> the `gsKit_prim_sprite_texture` calls the loader already makes. No new
-> rendering code.
+> **The static chrome is done.** Title lockup, starfield, Tux, rounded menu
+> highlight, the System Info panel and the ×/△/○ glyphs are all textures drawn
+> with `gsKit_prim_sprite_texture` — no new rendering code needed for any of
+> it, and none of it changed after the mockup.
 >
-> **New code** is needed for the menu typography. Dynamic text goes through
-> `gsKit_fontm_print_scaled`, and that font lives in the PS2's own BIOS ROM:
-> one typeface, scalable, not swappable. Matching the mockup means
-> pre-rendering a glyph atlas and writing a small text renderer over
+> **The menu typography is the one thing still open.** Dynamic text goes
+> through `gsKit_fontm_print_scaled`, and that font lives in the PS2's own BIOS
+> ROM: one typeface, scalable, not swappable — hence "Boot Current Config" in
+> the plain ROM face above instead of the mockup's styled type. Matching it
+> means pre-rendering a glyph atlas and writing a small text renderer over
 > `sprite_texture`.
->
-> And it lands **coarser than it looks** — the PS2 outputs 640×448 (NTSC),
-> 640×512 (PAL) or 640×480 (VGA), roughly 2.3× smaller than the image above.
 
 ## Why this exists
 
@@ -100,8 +100,9 @@ directly, and the modern-toolchain patch that used to be applied at build time
 is simply part of it. That patch's final form survives in history at `708c8ff`
 if you want to see the delta against pristine upstream in one piece.
 
-(`linux/` and `ps2facts/` *are* submodules, added later for a different
-reason and pointing at repositories that actually exist. See Layout.)
+(`linux/`, `ps2facts/` and `whiterhino/` *are* submodules, added later for a
+different reason and pointing at repositories that actually exist. See
+Layout.)
 
 Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
 issues, not archived — just abandoned. Of its seven forks, only citronalco's has
@@ -122,11 +123,13 @@ booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 The kernelloader source *is* this repo — no wrapper directory, so `make` at the
 root just works and there is exactly one source tree for the loader.
 
-Two directories are submodules, because what is in them is useful without the
-loader: `linux/` is the guest-OS patch set, and `ps2facts/` identifies a
-console. Clone with `--recurse-submodules`, or run `git submodule update
---init` afterwards. `./build.sh` reads neither, so forgetting them costs you the
-kernel build and the fact-finder, never the loader.
+Three directories are submodules, because what is in them is useful without
+the loader: `linux/` is the guest-OS patch set, `ps2facts/` identifies a
+console, and `whiterhino/` is a PCSX2 fork that embeds this repo's own
+`kloader.elf` for its `kload` boot mode. Clone with `--recurse-submodules`, or
+run `git submodule update --init` afterwards. `./build.sh` reads none of them,
+so forgetting one costs you the kernel build, the fact-finder or the emulator
+fork — never the loader.
 
 | Path | What it is |
 |---|---|
@@ -135,8 +138,10 @@ kernel build and the fact-finder, never the loader.
 | `TGE/` | the SBIOS Linux calls for all I/O; `TGE/iop/intrelay/` builds the intrelay IRXs |
 | `RTE/` | Sony's SBIOS, built only when the Linux Kit disc is mounted |
 | `iop/` | the six IOP modules — `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader` |
+| `include/` | the two headers shared between the EE and IOP sides |
 | `linux/` | **submodule → [ps2linux](https://github.com/Arawn-Davies/ps2linux)** — everything about the **guest OS**: upstream's patch set, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
 | `ps2facts/` | **submodule → [ps2facts](https://github.com/Arawn-Davies/ps2facts)** — asks a console what it is: ROM version, silicon revisions, DEV9, MechaCon, the full ROMDIR, and which IOP modules a loader would pick |
+| `whiterhino/` | **submodule → [pcsx2-whiterhino](https://github.com/Arawn-Davies/pcsx2-whiterhino)** — a PCSX2 fork carrying the EE TLB/MMU fixes below plus `kload`/`dload`, two ways to boot PS2 Linux without a real console |
 | `tools/` | host-side helpers — `crc32gen`, `png2rgb`, `ppm2rgb`, `bin2s`, the `pcsx2/` patches, deploy scripts |
 | `assets/` | shipped artwork; `assets/src/` holds unshipped sources |
 | `docs/` | the documents above; `docs/upstream/` keeps upstream's own `readme.txt` and friends |
@@ -229,7 +234,8 @@ cost is that Linux sees no HDD and no ethernet on such a console.
 least-exercised path in the emulator and the first thing Linux leans on. Seven
 emulator bugs later it reaches a shell too; the patches, the reasoning and a
 one-command red/green demonstration are in
-[`tools/pcsx2/`](tools/pcsx2/README.md).
+[`tools/pcsx2/`](tools/pcsx2/README.md). [`whiterhino/`](https://github.com/Arawn-Davies/pcsx2-whiterhino)
+carries those same fixes built in, so testing against it needs no patching.
 
 The kernel is now built from source rather than taken prebuilt — see
 [`linux/phase1/`](linux/phase1/README.md) — which is what made the last of those bugs
