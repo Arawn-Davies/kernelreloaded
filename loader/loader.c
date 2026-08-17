@@ -33,6 +33,7 @@
 #include "interrupts.h"
 #include "config.h"
 #include "loader.h"
+#include "bootlog.h"
 #include "graphic.h"
 #include "smem.h"
 #include "smod.h"
@@ -113,12 +114,18 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 	},
 	{
+		/* Not in every ROM. The SCPH-10000/15000 "ProtoKernels" predate it --
+		 * their rom0 has no ADDDRV at all, so both the load and the start fail
+		 * (-203). Everything the loader needs still works without it, but the
+		 * queued error forced a pad prompt at "Buffer check" that a console
+		 * with no working pad could never dismiss. Optional: log and carry on. */
 		.path = "rom0:ADDDRV",
 		.buffered = 0,
 		.argLen = 0,
 		.args = NULL,
 		.defaultmod = 1,
 		.debug_mode = -1,
+		.optional = 1,
 	},
 	{
 		.path = "host:eromdrvloader.irx",
@@ -373,12 +380,28 @@ moduleEntry_t modules[] = {
 		.debug_mode = -1,
 	},
 	{
+		/* The DEV9 driver, selected by whether DEV9 exists -- not by which
+		 * generation of ROM modules the console uses.
+		 *
+		 * It was .defaultmod = 1 with .slim = 1, and defaultmod 1 selects on
+		 * moduletype, which loadermenu.cpp sets to -1 for a phat. So the
+		 * driver was skipped on every phat, while intrelay-dev9.irx next door
+		 * is .defaultmod = 2 with .dev9 = 1 and is chosen whenever DEV9 is
+		 * present. On a phat with an adapter fitted the two disagreed: the
+		 * relay was started, its imports could not resolve without the driver,
+		 * and the IOP refused it with -200. That is the SCPH-30003R failure,
+		 * reproduced under PCSX2 with EthEnable=true.
+		 *
+		 * .slim = 0 loads it on either chassis; dev9Matches() then filters on
+		 * .dev9, so it loads exactly when the relay that needs it does. A slim
+		 * is unaffected -- DEV9 is assumed present there, so it still loads. */
 		.path = "host:ps2dev9.irx",
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
-		.defaultmod = 1,
-		.slim = 1,
+		.defaultmod = 2,
+		.slim = 0,
+		.dev9 = 1,
 		.debug_mode = -1,
 	},
 	{
@@ -407,7 +430,14 @@ moduleEntry_t modules[] = {
 		.defaultmod = 2,
 		.slim = 1,
 		.network = -1,
+		.dev9 = 1,
 		.debug_mode = -1,
+		/* A slim is assumed to have DEV9 because the register cannot be read
+		 * there, which is right for a console and wrong under an emulator with
+		 * no DEV9 configured: the IOP then refuses this with -200. Networking
+		 * is the only thing lost, so log it and carry on rather than stranding
+		 * the boot on a pad prompt at Buffer check. */
+		.optional = 1,
 	},
 	/* ps2smap.irx and ps2link.irx entries removed.
 	 *
@@ -457,6 +487,7 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 		.defaultmod = 2,
 		.slim = -1,
+		.dev9 = -1,
 		.debug_mode = -1,
 	},
 	{
@@ -465,6 +496,9 @@ moduleEntry_t modules[] = {
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
+		.defaultmod = 2,
+		.slim = 1,
+		.dev9 = -1,
 		.debug_mode = -1,
 	},
 	{
@@ -473,6 +507,9 @@ moduleEntry_t modules[] = {
 		.buffered = -1,
 		.argLen = 0,
 		.args = NULL,
+		.defaultmod = 2,
+		.slim = -1,
+		.dev9 = 1,
 		/* Only hard disc and USB is working. */
 	},
 	{
@@ -483,6 +520,7 @@ moduleEntry_t modules[] = {
 		.args = NULL,
 		.defaultmod = 2,
 		.slim = 1,
+		.dev9 = 1,
 		/* Only hard disc and USB is working. Network not working from EE side (use smaprpc.irx). */
 	},
 	{
@@ -1407,6 +1445,78 @@ moduleEntry_t *getModuleEntry(int idx)
 }
 
 
+/** True when the assembled kernel command line already carries this option.
+ *
+ * Matches at a token boundary only. A plain strstr() for "ip=" would also fire
+ * on "rd_ip=" or "noip=", and silently suppressing an option because it appears
+ * inside an unrelated one is the kind of bug that takes an afternoon. */
+static int hasCommandlineOption(const char *cmdline, const char *option)
+{
+	const char *p = cmdline;
+	const size_t len = strlen(option);
+
+	while ((p = strstr(p, option)) != NULL) {
+		if ((p == cmdline) || (p[-1] == ' ')) {
+			return 1;
+		}
+		p += len;
+	}
+	return 0;
+}
+
+/** True when a module's DEV9 requirement is met by the current configuration.
+ *
+ * This cannot be folded into the defaultmod selection in setDefaultConfiguration(),
+ * which is where every other load decision is made: that runs before config.txt is
+ * parsed and so only ever sees enableDev9's built-in default. It is the same reason
+ * the network gate is applied here rather than there. */
+static int dev9Matches(const moduleEntry_t *module)
+{
+	int available;
+
+	if (module->dev9 == 0) {
+		return 1;
+	}
+	/* NEVER touch DEV9 hardware from here.
+	 *
+	 * This function used to call ps2dev9_probe() on a fat, which reads
+	 * DEV9_R_REV from the EE. That hung an SCPH-30003R stone dead, and took
+	 * three boots to see because of *where* it hangs: this runs at the top of
+	 * startModules()' loop, before the graphic_setStatusMessage() and kprintf()
+	 * that name the module. So the boot log stops on whatever module happened
+	 * to load last, and disabling modules appears to move the hang earlier when
+	 * in fact it never moves at all. It sat behind poweroff.irx, then
+	 * rom1:SDRDRV, then rom0:PADMAN, and was the same instruction every time.
+	 *
+	 * It is also badly placed even when it works. ps2dev9_probe()'s own comment
+	 * says it was split out "so it can be asked before the IOP modules are
+	 * chosen" -- but dev9Matches() is only ever called from startModules(),
+	 * which real_loader() runs *after* SifIopReset(). A hardware probe that
+	 * needs to happen before the modules are picked cannot live in the loop
+	 * that picks them.
+	 *
+	 * So: consult the cached answer only. ps2dev9_probed() returns -1 when
+	 * nothing has probed yet, which is the case on every boot today, and -1 is
+	 * not > 0, so a fat falls through to "DEV9 absent" and takes the
+	 * intrelay-direct path. That is upstream's behaviour and rickgaiser's --
+	 * neither of them auto-selects the DEV9 relay on a fat -- so the fallback
+	 * is the known-good configuration rather than a guess.
+	 *
+	 * If a probe is ever wired in somewhere legitimate (before the IOP reset,
+	 * and only on a fat), this picks the answer up with no change here.
+	 *
+	 * A slim still needs no probe at all: the adapter is built in, so the
+	 * chassis implies presence, and reading that register on a slim is the
+	 * hang this project already documented. */
+	if (isSlimPSTwo()) {
+		available = loaderConfig.enableDev9;
+	} else {
+		available = loaderConfig.enableDev9 && (ps2dev9_probed() > 0);
+	}
+
+	return module->dev9 == (available ? 1 : -1);
+}
+
 /** Load all IOP modules (from host). */
 int loadModules(void)
 {
@@ -1433,6 +1543,13 @@ int loadModules(void)
 				char *buffer;
 				buffer = load_file(modules[i].path, &modules[i].size, NULL);
 				modules[i].buffer = buffer;
+				if ((buffer == NULL) && modules[i].optional) {
+					/* Absent and allowed to be -- see .optional. Skip it
+					 * rather than tearing down every module loaded so far. */
+					kprintf("Optional module '%s' not present, continuing.\n",
+						modules[i].path);
+					continue;
+				}
 				if (buffer == NULL) {
 					error_printf("Failed to load module '%s'.", modules[i].path);
 
@@ -1490,9 +1607,21 @@ void startModules(struct ps2_bootinfo *bootinfo)
 					continue;
 				}
 			}
+			if (!dev9Matches(&modules[i])) {
+				continue;
+			}
 			if (modules[i].ps2smap) {
 				modules[i].args = getPS2MAPParameter(&modules[i].argLen);
 			}
+
+			/* Name the module before starting it, the way the startup loader
+			 * does. Without this the whole loop reports "Starting modules" and
+			 * nothing else, so a hang here says only "somewhere in the Linux
+			 * module set" -- which on a fat with an adapter is a dozen
+			 * candidates, several of them DEV9. The startup loop has named its
+			 * modules all along; this one never did. */
+			graphic_setStatusMessage(modules[i].path);
+			kprintf("Starting module (%s)\n", modules[i].path);
 			if (modules[i].buffered) {
 				int ret;
 
@@ -1529,10 +1658,14 @@ void startModules(struct ps2_bootinfo *bootinfo)
 				rv = SifLoadModule(modules[i].path, modules[i].argLen, modules[i].args);
 			}
 			if (rv < 0) {
-				if (modules[i].eromdrv) {
-					error_printf("Failed to start module \"%s\" (rv = %d).", modules[i].args, rv);
+				const char *what = modules[i].eromdrv ? modules[i].args : modules[i].path;
+
+				if (modules[i].optional) {
+					/* Logged, not queued as an error -- see .optional. */
+					kprintf("Optional module \"%s\" unavailable (rv = %d), continuing.\n",
+						what, rv);
 				} else {
-					error_printf("Failed to start module \"%s\" (rv = %d).", modules[i].path, rv);
+					error_printf("Failed to start module \"%s\" (rv = %d).", what, rv);
 				}
 			}
 		}
@@ -2114,6 +2247,17 @@ static int real_loader(void)
 		bootpage.bootinfo.maxmem = 128 * 1024 * 1024;
 	} else {
 		bootpage.bootinfo.mach_type = PS2_BOOTINFO_MACHTYPE_PS2;
+		if (loaderConfig.enableExtraMem) {
+			/* config.txt's EnableExtraMem, from a caller that actually knows
+			 * the answer -- see loaderConfig.enableExtraMem's own comment in
+			 * loader.h. Takes priority over the compile-time guess below: a
+			 * caller that says so has checked, where FAKE_MAXMEM_MB has not.
+			 * Fixed at 128MB, the T10K devkit layout size PCSX2's
+			 * ExtraMemory=true actually maps -- same value the IsT10K()
+			 * branch above uses for real T10K hardware. */
+			bootpage.bootinfo.maxmem = 128 * 1024 * 1024 - 4096;
+			kprintf("MEMORY: using 128MB (config.txt EnableExtraMem)\n");
+		}
 #ifdef FAKE_MAXMEM_MB
 		/* Deliberate lie, for emulation only. prom.c does
 		 *     add_memory_region(0, ps2_bootinfo->maxmem & PAGE_MASK, ...)
@@ -2124,12 +2268,18 @@ static int real_loader(void)
 		 * 128MB T10K devkit layout.
 		 *
 		 * Opt-in via FAKE_EXTRA_RAM in config.mk so a normal build cannot
-		 * carry it onto hardware by accident. */
-		bootpage.bootinfo.maxmem = FAKE_MAXMEM_MB * 1024 * 1024 - 4096;
-		kprintf("MEMORY: claiming %dMB (FAKE_MAXMEM_MB) -- needs real backing\n",
-			FAKE_MAXMEM_MB);
+		 * carry it onto hardware by accident. Skipped when EnableExtraMem
+		 * already set bootinfo.maxmem above -- a caller who checked beats
+		 * this guess. */
+		else {
+			bootpage.bootinfo.maxmem = FAKE_MAXMEM_MB * 1024 * 1024 - 4096;
+			kprintf("MEMORY: claiming %dMB (FAKE_MAXMEM_MB) -- needs real backing\n",
+				FAKE_MAXMEM_MB);
+		}
 #else
-		bootpage.bootinfo.maxmem = 32 * 1024 * 1024 - 4096;
+		else {
+			bootpage.bootinfo.maxmem = 32 * 1024 * 1024 - 4096;
+		}
 #endif
 	}
 
@@ -2148,6 +2298,11 @@ static int real_loader(void)
 		error_printf("Stack is unusable!");
 		return -1;
 	}
+	/* Slice the bar between the four things a boot reads, roughly by how long
+	 * each takes: the initrd is several megabytes and dominates, the SBIOS is
+	 * a rounding error. Without this each one swept the bar from empty to full
+	 * in turn, which says nothing about the boot as a whole. */
+	graphic_setLoadStage(0, 10);
 	sbios = load_sbios(&bootpage);
 	if (sbios == NULL) {
 		return -35;
@@ -2170,6 +2325,7 @@ static int real_loader(void)
 		}
 	}
 	if (buffer == NULL) {
+		graphic_setLoadStage(10, 30);
 		buffer = load_kernel_file(kernel_filename, &kernel_size);
 	}
 	if (buffer != NULL) {
@@ -2184,7 +2340,21 @@ static int real_loader(void)
 		}
 
 		/* Check for errors in ELF file. */
-		graphic_setStatusMessage("Checking Kernel...");
+		/* From here the menu is gone and the screen is the loader's own progress.
+	 * Swap the System Info panel for the boot log: what the loader is doing now
+	 * matters more than what the console is.
+	 *
+	 * Guarded: instant boot (main.cpp, AutoBootTime < 0) already turned this
+	 * on before real_loader() was ever reached, covering SBIOS calls and
+	 * controller/keyboard init too, not just from here. Calling it again
+	 * would be harmless -- bootlogBegin() only sets a flag -- but the point
+	 * is one continuous panel for that path, not two activations of the
+	 * same one. */
+	if (!bootlogActive()) {
+		bootlogBegin();
+	}
+
+	graphic_setStatusMessage("Checking Kernel...");
 		if (check_sections("kernel", buffer, kernel_size, 0x10000, lowestAddress, &highest, NULL) != 0) {
 			free(buffer);
 			buffer = NULL;
@@ -2204,6 +2374,7 @@ static int real_loader(void)
 		}
 
 		graphic_setStatusMessage(NULL);
+		graphic_setLoadStage(40, 10);
 		if (loadModules()) {
 			free(buffer);
 			buffer = NULL;
@@ -2230,6 +2401,7 @@ static int real_loader(void)
 			}
 			initrd_size = ((uint32_t) lowestAddress) - ((uint32_t) &initrd_header[2]);
 			kprintf("%d bytes for initrd available.\n", initrd_size);
+			graphic_setLoadStage(50, 50);
 			initrd_start = ((unsigned int) load_file(initrd_filename, &initrd_size, &initrd_header[2]));
 			if (initrd_start != 0) {
 				if (initrd_size != 0) {
@@ -2469,6 +2641,37 @@ static int real_loader(void)
 					}
 				}
 			}
+		}
+
+		/* Do not let the kernel hunt for a DHCP lease on a console with no
+		 * network device.
+		 *
+		 * The kernel is built with IP autoconfiguration, for NFS root, and that
+		 * runs whether or not an interface exists. With none it sends a full
+		 * round of DHCP requests, times out, reopens the devices and does it all
+		 * again -- about ninety seconds added to every boot, on a machine that
+		 * cannot possibly answer. It is the single largest cost in a ramdisk
+		 * boot on a console without the adapter.
+		 *
+		 * pccard_type is exactly the right thing to test: it is what tells Linux
+		 * the HDD and ethernet exist at all (arch/mips/ps2/setup.c assigns it to
+		 * ps2_pccard_present, which smap.c gates on), and it has just been
+		 * decided above from the DEV9 result, the EnableDev9 setting and network
+		 * support together. Zero means Linux is being told there is no adapter,
+		 * so ip= could only ever fail. Non-zero means the hardware is there and
+		 * configured, and autoconfiguration is left alone -- which is what an
+		 * NFS root needs.
+		 *
+		 * An explicit ip= on the command line always wins: someone who wrote one
+		 * meant it. */
+		if ((bootpage.bootinfo.pccard_type == 0) &&
+			!hasCommandlineOption(bootpage.commandline, "ip=")) {
+			size_t used = strlen(bootpage.commandline);
+
+			snprintf(&bootpage.commandline[used],
+				sizeof(bootpage.commandline) - used, " ip=off");
+			kprintf("No network hardware, appended ip=off to skip DHCP.\n");
+			kprintf("Kernel command line: \"%s\"\n", bootpage.commandline);
 		}
 
 		/* Setup exceptions: */

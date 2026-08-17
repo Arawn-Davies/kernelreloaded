@@ -6,7 +6,7 @@ EE_BIN = $(PROGRAM).elf
 EE_OBJS = $(PROGRAM).o main.o jump.o entry.o exception.o interrupts.o graphic.o cache.o
 EE_OBJS += menu.o menuEntry.o pad.o modules.o rom.o loadermenu.o configuration.o eedebug.o
 EE_OBJS += SMS_SIF.o SMS_CDVD.o SMS_CDDA.o getrte.o getsbios.o getelf.o ps2dev9.o hdd.o
-EE_OBJS += nvram.o kprint.o crc32check.o
+EE_OBJS += nvram.o kprint.o crc32check.o font.o bootlog.o buildstamp.o
 EE_LIBS = -lpatches -L$(PS2DEV)/gsKit/lib -lgskit -ldmakit -L$(PS2SDK)/ports/lib 
 EE_LIBS += -lmc -lfileXio -lkbd -lcdvd
 ifneq ($(LIBTIFF),)
@@ -78,11 +78,46 @@ EE_FLAGS += -I../tools/crc32gen/
 # worth revisiting once the loader runs -- see docs/porting-notes.md.
 EE_FLAGS += -DNEWLIB_PORT_AWARE
 
+# Draw all text through the BIOS ROM font instead of the glyph atlas
+# (make FONT_ROM=1). A bisect aid for hardware faults -- see font.cpp.
+ifneq ($(FONT_ROM),)
+EE_FLAGS += -DFONT_ROM
+endif
+
+# Leave the starfield backdrop unloaded (make NO_BACKDROP=1). A VRAM bisect
+# aid -- see the note at texStarfield in graphic.cpp.
+ifneq ($(NO_BACKDROP),)
+EE_FLAGS += -DNO_BACKDROP
+endif
+
 ifneq ($(FAKE_EXTRA_RAM),)
 EE_FLAGS += -DFAKE_MAXMEM_MB=$(FAKE_EXTRA_RAM)
 endif
 
+ifneq ($(INSTANT_BOOT_DEFAULT),)
+EE_FLAGS += -DINSTANT_BOOT_DEFAULT
+endif
+
 EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
+
+# buildstamp.c names the tree this ELF was built from. build.sh writes it
+# before invoking make, because that is the side with git.
+#
+# This rule is the fallback for a bare "make". Two things about it are
+# load-bearing, both learned the hard way:
+#
+#   - it has NO phony prerequisite. An always-out-of-date generated source is
+#     a build loop: .depend/buildstamp.d is regenerated from buildstamp.c,
+#     buildstamp.c is remade because its phony dependency never satisfies, and
+#     make goes round forever, parallel jobs interleaving writes into the file.
+#
+#   - it lives below the includes, and .DEFAULT_GOAL is pinned. The first
+#     explicit target in a makefile becomes the default goal, so written above
+#     "include Makefile.eeglobal" this rule quietly BECAME "make" -- the whole
+#     loader stopped building while the build still reported success, because
+#     build.sh copies whatever loader.elf it finds.
+KLOADER_BUILD_ID ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+KLOADER_BUILD_DATE ?= $(shell date -u '+%Y-%m-%d %H:%MZ')
 
 # The -D_STLP_* defines, -Dwint_t=int and the stlport include path are all
 # vestigial: modern ps2sdk ships no STLport at all (that directory does not
@@ -95,6 +130,19 @@ EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
 # Dropped along with the dead -I; the _STLP_* defines are left alone to keep
 # this diff to what actually breaks.
 EE_CXXFLAGS = $(EE_FLAGS) -D_STLP_NO_NAMESPACES -D_NOTHREADS -D_STLP_NO_EXCEPTIONS -D_STLP_USE_NEWALLOC -D_STLP_HAS_WCHAR_T -D_STLP_NO_IOSTREAMS
+
+# Per-function/per-variable sections plus a linker GC pass. kloader-instant.elf
+# (INSTANT_BOOT_DEFAULT=1) never calls initMenu() -- see main.cpp -- so the
+# ~300 lines of Menu/MenuEntry widget construction and callbacks it alone
+# reaches (mcLoadConfig, editString, fsroot, the SBIOS-calls submenu, ...)
+# become unreachable from that build's main(). Without this, the linker keeps
+# them anyway: it links whole .o files, not individual functions, so
+# loadermenu.o's unused half rides along regardless of whether anything calls
+# it. The normal kloader.elf still calls initMenu(), so nothing is actually
+# removed there -- this only pays off for the instant build.
+EE_CFLAGS += -ffunction-sections -fdata-sections
+EE_CXXFLAGS += -ffunction-sections -fdata-sections
+EE_LDFLAGS += -Wl,--gc-sections
 
 # ps2link.irx and ps2smap.irx are absent from this list because modern ps2sdk
 # ships neither. ps2link moved out of ps2sdk into its own project
@@ -152,14 +200,14 @@ RGB_FILES = \
 	back.rgb \
 	selected.rgb \
 	unselected.rgb \
-	disc.rgb \
 	starfield.rgb \
 	title.rgb \
 	bottombar.rgb \
 	panel.rgb \
 	highlight.rgb \
 	bartrack.rgb \
-	barfill.rgb
+	barfill.rgb \
+	glyphs.rgb
 
 RGB_HEADERS = \
 	$(subst .rgb,.h, $(RGB_FILES))
@@ -206,7 +254,14 @@ clean:
 	rm -f romfilelist.h romdefinitions.h rominitialize.h
 	rm -f $(RGB_HEADERS) $(RGB_FILES)
 	rm -f $(PACKEDFILE)
-	rm -f $(ROM_FILES)
+	# defaultconfig.txt is hand-written source (git-tracked), not a generated
+	# ROM component, despite living in ROM_FILES alongside ones that are --
+	# it just also gets embedded. A plain `rm -f $(ROM_FILES)` deleted it on
+	# every clean, which only ever went unnoticed because a stale
+	# defaultconfig_txt.o from before the last time this file existed kept
+	# masking the loss. Confirmed the hard way: `git status` showed it
+	# deleted after nothing more than `./build.sh clean`.
+	rm -f $(filter-out defaultconfig.txt,$(ROM_FILES))
 	rm -f $(addsuffix .s,$(subst .,_,$(ROM_FILES)))
 	rm -f $(addsuffix .o,$(subst .,_,$(ROM_FILES)))
 	rm -rf .depend
@@ -321,6 +376,12 @@ mcicons/%.bmp: ../assets/mcicons/%.bmp
 
 include Makefile.pref
 include Makefile.eeglobal
+
+# Below the includes on purpose -- see the note by KLOADER_BUILD_ID above.
+buildstamp.c:
+	@echo '/* Generated before the build. Not tracked. */' > $@
+	@echo 'const char loaderBuildId[] = "$(KLOADER_BUILD_ID)";' >> $@
+	@echo 'const char loaderBuildStamp[] = "$(KLOADER_BUILD_ID) $(KLOADER_BUILD_DATE)";' >> $@
 ifneq ($(MAKECMDGOALS),clean)
 -include $(addprefix .depend/,$(subst .o,.d, $(EE_OBJS)))
 endif

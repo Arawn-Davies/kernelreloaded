@@ -43,10 +43,27 @@ extern "C" {
 		int sound;
 		/** -1, if module needs network, 0 otherwise. */
 		int network;
+		/** 1, if the module needs DEV9. -1, if it needs DEV9 absent. 0, either.
+		 *
+		 * The interrupt relay comes in four builds spanning two independent
+		 * axes -- direct/dev9 is about whether DEV9 is present, rpc/non-rpc is
+		 * about slim vs fat -- but defaultmod only ever selected on the chassis
+		 * axis, so the DEV9 one went unrepresented. See the intrelay entries. */
+		int dev9;
 		/** True, if module is responsible eromdrv. */
 		int eromdrv;
 		/** 1, if debug mode. 0, load always. -1, no debug mode */
 		int debug_mode;
+		/** 1, if this module is allowed to be missing.
+		 *
+		 * Its absence is then logged and the boot carries on, instead of
+		 * queueing an error message. That distinction matters more than it
+		 * looks: a queued error makes the "Buffer check" stage call
+		 * waitForUser(), which waits on the PAD -- so on a console where pad
+		 * init also fails there is no way to dismiss it and the boot stops
+		 * dead. An optional module that simply is not in this ROM must never
+		 * be able to cause that. */
+		int optional;
 	} moduleEntry_t;
 
 	typedef struct {
@@ -56,6 +73,28 @@ extern "C" {
 		int enableEEDebug;
 		int autoBootTime;
 		int patchLibsd;
+		/* Persistent record of "this boot took the instant path", set once
+		 * in main.cpp and never cleared -- unlike autoBootTime itself, which
+		 * main.cpp normalizes back to 0 immediately after consuming the
+		 * negative instant-boot sentinel (see its own comment: the field is
+		 * indexed with no bounds check by the Advanced menu's "Auto Boot"
+		 * entry, so a negative value cannot be left sitting in it). graphic.cpp
+		 * needs a way to know it was instant *after* that normalization, to
+		 * condense the System Info panel onto the bottom bar instead of
+		 * hiding it outright -- see paintBootLog()'s caller. */
+		int instantBoot;
+		/* Overrides FAKE_MAXMEM_MB/the retail 32MB default when set, to the
+		 * fixed 128MB T10K devkit layout size. Nothing on this console can
+		 * know for itself whether "more than 32MB" is really backed by
+		 * memory or just claimed -- FAKE_MAXMEM_MB is a build-time guess for
+		 * exactly that reason. A caller that already knows the true answer
+		 * (PCSX2/WhiteRhino reading its own ExtraMemory setting, in
+		 * particular) can say so here instead of this loader guessing, via
+		 * config.txt's EnableExtraMem=1 -- same shape as EnableDev9, and for
+		 * the same reason: a boolean the caller sets, not a number it has to
+		 * get exactly right. See loader.c's use of it, next to
+		 * FAKE_MAXMEM_MB. */
+		int enableExtraMem;
 	} loader_config_t;
 
 	extern loader_config_t loaderConfig;
@@ -74,6 +113,12 @@ extern "C" {
 	void printAllModules(void);
 	void DelayThread(int delay);
 	const char *getPcicType(void);
+
+	/* Generated into buildstamp.c by loader/Makefile on every build.
+	 * loaderBuildId is the git description alone ("ab86e9e", "ab86e9e+" when
+	 * the tree was dirty); loaderBuildStamp appends the UTC build time. */
+	extern const char loaderBuildId[];
+	extern const char loaderBuildStamp[];
 
 	extern char iop_reset_param[];
 	extern int debug_mode;

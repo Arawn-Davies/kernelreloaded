@@ -66,6 +66,52 @@ static int expbay_device_probe(void);
 static int expbay_device_reset(void);
 static int expbay_init(void);
 
+/* The probe's answer so far, shared with ps2dev9_probed(). */
+static int probeCached = -1;
+
+int ps2dev9_probed(void)
+{
+	return probeCached;
+}
+
+int ps2dev9_probe(void)
+{
+	USE_DEV9_REGS;
+	int hw;
+
+	/* Is there DEV9 hardware at all?
+	 *
+	 * Presence cannot be assumed from the chassis. A slim has the adapter
+	 * built in, but a fat PS2 may have a CXD9611 expansion bay, a CXD9566
+	 * PCMCIA card, or -- most of them -- neither, and the EnableDev9 config
+	 * flag says only what the user permits, never what is fitted.
+	 *
+	 * This is the same revision-register read ps2dev9_init() makes below, split
+	 * out so it can be asked before the IOP modules are chosen: it touches one
+	 * register and changes no state, whereas init() resets the device and
+	 * switches the network on. The result is cached because the answer cannot
+	 * change while the console is powered.
+	 *
+	 * Returns 0x20 (CXD9566 PCMCIA), 0x30 (CXD9611 expansion bay), or 0 for
+	 * nothing recognisable there. */
+	if (probeCached >= 0) {
+		return probeCached;
+	}
+
+	hw = DEV9_REG(DEV9_R_REV) & 0xf0;
+	if ((hw != 0x20) && (hw != 0x30)) {
+		hw = 0;
+	}
+	probeCached = hw;
+
+	M_PRINTF("DEV9PROBE: hardware %s (rev & 0xf0 = 0x%02x)\n",
+		(hw == 0x20) ? "CXD9566 PCMCIA" :
+		(hw == 0x30) ? "CXD9611 expansion bay" : "ABSENT",
+		(unsigned int) hw);
+
+	return probeCached;
+}
+
 int ps2dev9_init()
 {
 	USE_DEV9_REGS;

@@ -5,6 +5,7 @@
 #include <fileio.h>
 
 #include "memory.h"
+#include "bootlog.h"
 #include "iopmem.h"
 
 #define BUFFER_SIZE 256
@@ -108,6 +109,13 @@ int kprintf(const char *format, ...)
 	ret = vsnprintf(b, BUFFER_SIZE, format, args);
 	kputs(b);
 	va_end(args);
+
+	/* Mirror to the on-screen log. Only from user mode: in kernel mode the
+	 * buffer pointer has been translated to KSEG0 and the TLB mapping the log
+	 * needs may not exist, and nothing printed from there is worth a fault. */
+	if (!(sp & KSEG0_MASK)) {
+		bootlogAppend(b);
+	}
 
 	return ret;
 }

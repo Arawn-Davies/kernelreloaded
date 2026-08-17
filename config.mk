@@ -70,3 +70,13 @@ endif
 # 128MB T10K devkit map). Blank or unset for a normal build -- a real console
 # told it has more will hand out pages that are not there.
 FAKE_EXTRA_RAM = 64
+
+# Build the on-screen boot log active from the very first line of main() --
+# before initMenu(), before any module loads, before config.txt can even be
+# read -- rather than the runtime AutoBootTime<0 config path's earliest
+# possible point (config.txt itself needs a module or two loaded first to be
+# readable on real hardware; mc0:/mc1: need MCMAN/MCSERV). Blank/unset for a
+# normal build. See tools/pcsx2's kload feature: it builds this variant
+# specifically for -kload-instant, alongside the normal build, and chooses
+# between the two at boot time.
+INSTANT_BOOT_DEFAULT =

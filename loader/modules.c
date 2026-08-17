@@ -20,6 +20,7 @@
 
 #include "modules.h"
 #include "graphic.h"
+#include "bootlog.h"
 #include "loader.h"
 #include "rom.h"
 #include "eedebug.h"
@@ -67,6 +68,14 @@ typedef struct
 	int network;
 	/** 1, if debug mode. 0, load always. -1, no debug mode */
 	int debug_mode;
+	/** True, if the module is allowed to be missing from this console's ROM.
+	 *
+	 * Its absence is logged and the boot continues, rather than queueing an
+	 * error. A queued error makes the "Buffer check" stage in loader.c call
+	 * waitForUser(), which blocks on a pad press -- so a module that is simply
+	 * not in this ROM could otherwise halt the boot outright. This is the same
+	 * exemption the eromdrv case below already had, generalised. */
+	int optional;
 } moduleLoaderEntry_t;
 
 
@@ -88,10 +97,17 @@ static moduleLoaderEntry_t moduleList[] = {
 		.args = NULL
 	},
 	{
-		/* Module is required to access rom1: */
+		/* Module is required to access rom1:
+		 *
+		 * Absent from the SCPH-10000/15000 "ProtoKernel" ROMs, which predate
+		 * it -- rom0 has no ADDDRV at all there and both load and start return
+		 * -203. rom1: access is then unavailable (so is DVD-Video, which the
+		 * eromdrv entry below already degrades over), but Linux boots fine
+		 * without it. Optional so it cannot strand the boot on a pad prompt. */
 		.path = "rom0:ADDDRV",
 		.argLen = 0,
-		.args = NULL
+		.args = NULL,
+		.optional = 1,
 	},
 	{
 		/* Module is required to access video DVDs */
@@ -318,8 +334,29 @@ void checkROMVersion(void)
 		ret = read(fd, version, sizeof(version));
 		close(fd);
 		if (ret > 0) {
-			memcpy(ps2_rom_version, version, ret);
-			ps2_rom_version[ret - 1] = 0;
+			int len = ret;
+
+			/* rom0:ROMVER is 16 bytes and newline-terminated:
+			 * "0160EC20011004\n\0". The old ps2_rom_version[ret - 1] = 0
+			 * zeroed index 15, which was ALREADY the terminator, so the
+			 * newline at index 14 survived into the string.
+			 *
+			 * Invisible in a log -- it just breaks the line early -- but not
+			 * on screen: the UI font maps an unprintable character to a space,
+			 * so the version measured about four pixels wider than it drew and
+			 * every right-aligned copy of it sat that far left of the column.
+			 *
+			 * Strip every trailing control character rather than assuming one:
+			 * some ROMs pad with \r\n. */
+			if (len > (int) sizeof(ps2_rom_version) - 1) {
+				len = sizeof(ps2_rom_version) - 1;
+			}
+			memcpy(ps2_rom_version, version, len);
+			ps2_rom_version[len] = 0;
+			while ((len > 0) && ((unsigned char) ps2_rom_version[len - 1] <= ' ')) {
+				len--;
+				ps2_rom_version[len] = 0;
+			}
 		}
 		version[4] = 0;
 		romver = strtoul(version, NULL, 16);
@@ -536,6 +573,22 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
 
 			/* Load configuration on startup and not on IOP reset. */
 			moduleList[i].loadCfg = 0;
+
+			/* Earliest point loaderConfig.autoBootTime can be known for this
+			 * (normal) build -- config.txt is read here, in this loop, and
+			 * not before. On real hardware even the host: fallback is only
+			 * reached after the mc0:/mc1: attempts above it, which need
+			 * MCMAN/MCSERV (loaded two entries up moduleList[]) to be
+			 * meaningful at all. INSTANT_BOOT_DEFAULT builds (main.cpp) skip
+			 * this dependency entirely by not needing config.txt in the
+			 * first place; this is the fallback for a normal kloader.elf
+			 * whose config.txt sets AutoBootTime=-1 (kload's -kload-instant
+			 * always writes it, belt-and-suspenders, even though the
+			 * instant-build variant does not need it). */
+			if (loaderConfig.autoBootTime < 0 && !bootlogActive()) {
+				bootlogBegin();
+				loaderConfig.instantBoot = 1;
+			}
 		}
 		graphic_setStatusMessage(moduleList[i].path);
 		kprintf("Loading module (%s)\n", moduleList[i].path);
@@ -659,6 +712,12 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
 							 *
 							 * kprintf above already recorded it. */
 							kprintf("DVD-Video support unavailable.\n");
+						} else if (moduleList[i].optional) {
+							/* Not in this ROM and allowed not to be. Logged by
+							 * the kprintf above; must not queue an error, or
+							 * the Buffer check stage waits on a pad press. */
+							kprintf("Optional module \"%s\" unavailable, continuing.\n",
+								moduleList[i].path);
 						} else {
 							error_printf("Failed to load module \"%s\".", moduleList[i].path);
 						}

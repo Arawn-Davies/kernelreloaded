@@ -26,6 +26,15 @@ GSTEXTURE *getTexHighlight(void);
 /** Draw a texture at (x, y) with depth z. Binds it first. */
 void paintTexture(GSTEXTURE *tex, int x, int y, int z);
 GSTEXTURE *getTexUnselected(void);
+/* graphic.cpp keeps gsGlobal file-static; font.cpp needs it to draw, and an
+ * accessor is preferable to widening the variable's scope. */
+GSGLOBAL *getGsGlobal(void);
+
+/** The BIOS ROM font. Exposed for the FONT_ROM fallback in font.cpp. */
+GSFONTM *getGsFont(void);
+/* Defined in graphic.cpp but never declared in a header: every caller was in
+ * graphic.cpp itself until now. */
+GSTEXTURE *getTexture(const char *filename);
 bool isNTSCMode(void);
 int getCurrentMode(void);
 #endif
@@ -33,6 +42,14 @@ int getCurrentMode(void);
 #ifdef __cplusplus
 extern "C" {
 #endif
+	/* Repaint from C. graphic_paint() itself is declared C++-side above, so
+	 * bootlog.c cannot reach it; this is the same call with C linkage. */
+	void graphic_repaint(void);
+	/* Which slice of the overall bar the current stage fills, as base and span
+	 * in percent. Set once per boot stage; graphic_setPercentage() maps each
+	 * loader's own 0..100 into it, so the bar fills once across the whole boot
+	 * instead of restarting per file. Default 0/100 is the identity. */
+	void graphic_setLoadStage(int base, int span);
 	void graphic_setPercentage(int percentage, const char *name);
 	void setErrorMessage(const char *text);
 	const char *getErrorMessage(void);

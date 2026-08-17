@@ -1,0 +1,10 @@
+[submodule "linux"]
+	path = linux
+	url = https://github.com/Arawn-Davies/ps2linux.git
+[submodule "ps2facts"]
+	path = ps2facts
+	url = https://github.com/Arawn-Davies/ps2facts.git
+[submodule "whiterhino"]
+	path = whiterhino
+	url = https://github.com/Arawn-Davies/pcsx2-whiterhino.git
+	branch = whiterhino

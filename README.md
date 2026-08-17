@@ -92,13 +92,16 @@ toolchain work was for — and it now does.
 This tree started as **[citronalco/kernelloader](https://github.com/citronalco/kernelloader)**,
 not rickgaiser's.
 
-It was a git submodule until August 2026. That is gone: upstream has been dead
-since 2017 and nothing here can be pushed to it, so the pointer only ever
-referenced commits that existed on one machine — a clone got an empty directory
-and GitHub's submodule link 404'd. The source is now tracked directly, and the
-modern-toolchain patch that used to be applied at build time is simply part of
-it. That patch's final form survives in history at `708c8ff` if you want to see
-the delta against pristine upstream in one piece.
+The loader source was a git submodule until August 2026. That is gone: upstream
+has been dead since 2017 and nothing here can be pushed to it, so the pointer
+only ever referenced commits that existed on one machine — a clone got an empty
+directory and GitHub's submodule link 404'd. The source is now tracked
+directly, and the modern-toolchain patch that used to be applied at build time
+is simply part of it. That patch's final form survives in history at `708c8ff`
+if you want to see the delta against pristine upstream in one piece.
+
+(`linux/` and `ps2facts/` *are* submodules, added later for a different
+reason and pointing at repositories that actually exist. See Layout.)
 
 Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
 issues, not archived — just abandoned. Of its seven forks, only citronalco's has
@@ -116,8 +119,14 @@ booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 
 ## Layout
 
-The kernelloader source *is* this repo — no submodule, no wrapper directory, so
-`make` at the root just works and there is exactly one source tree.
+The kernelloader source *is* this repo — no wrapper directory, so `make` at the
+root just works and there is exactly one source tree for the loader.
+
+Two directories are submodules, because what is in them is useful without the
+loader: `linux/` is the guest-OS patch set, and `ps2facts/` identifies a
+console. Clone with `--recurse-submodules`, or run `git submodule update
+--init` afterwards. `./build.sh` reads neither, so forgetting them costs you the
+kernel build and the fact-finder, never the loader.
 
 | Path | What it is |
 |---|---|
@@ -126,7 +135,8 @@ The kernelloader source *is* this repo — no submodule, no wrapper directory, s
 | `TGE/` | the SBIOS Linux calls for all I/O; `TGE/iop/intrelay/` builds the intrelay IRXs |
 | `RTE/` | Sony's SBIOS, built only when the Linux Kit disc is mounted |
 | `iop/` | the six IOP modules — `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader` |
-| `linux/` | everything about the **guest OS**: upstream's `patches/`, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
+| `linux/` | **submodule → [ps2linux](https://github.com/Arawn-Davies/ps2linux)** — everything about the **guest OS**: upstream's patch set, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
+| `ps2facts/` | **submodule → [ps2facts](https://github.com/Arawn-Davies/ps2facts)** — asks a console what it is: ROM version, silicon revisions, DEV9, MechaCon, the full ROMDIR, and which IOP modules a loader would pick |
 | `tools/` | host-side helpers — `crc32gen`, `png2rgb`, `ppm2rgb`, `bin2s`, the `pcsx2/` patches, deploy scripts |
 | `assets/` | shipped artwork; `assets/src/` holds unshipped sources |
 | `docs/` | the documents above; `docs/upstream/` keeps upstream's own `readme.txt` and friends |
@@ -204,6 +214,16 @@ stick via wLaunchELF: kernelloader built on gcc 15 hands off to a 2001
 MontaVista 2.4.17 kernel, the initrd unpacks, USB enumerates as a SCSI device,
 and userspace comes up at a prompt.
 
+**And on a phat, since 2026-08-16** — an SCPH-30003R with a network adapter,
+also from USB. That took two loader fixes and one config line. `ps2dev9.irx` was
+selected on the ROM-generation axis rather than on whether DEV9 exists, so a
+phat *with* an adapter started the DEV9 interrupt relay without its driver and
+the IOP refused it; and `dev9Matches()` probed DEV9 hardware from inside
+`startModules()`, which hangs that console outright. The config line is
+**`EnableDev9=0`**, because the EE-side DEV9 register read is not survivable
+there at all — see [`CLAUDE.md`](CLAUDE.md) under "Debugging on hardware". The
+cost is that Linux sees no HDD and no ethernet on such a console.
+
 **And under PCSX2**, once the emulator is fixed. Stock PCSX2 gets as far as
 `Freeing unused kernel memory` and stops dead — the EE MMU is the
 least-exercised path in the emulator and the first thing Linux leans on. Seven
@@ -241,13 +261,15 @@ serve both slots and are loaded two entries earlier, so it needs no extra module
 loading and no reordering. MC1 also gains the Load/Save/Delete menu entries it
 never had.
 
-### Three bugs only real hardware could find
+### Five bugs only real hardware could find
 
 Each of these passed under PCSX2 and failed on a console, for structural
 reasons rather than bad luck:
 
 | Fault | Why the emulator missed it |
 |---|---|
+| Reading `DEV9_R_REV` from the EE hangs the console | PCSX2 answers 0 and carries on. Found on a slim, assumed to be a slim-only trait because a slim has the adapter built in and only a phat looked worth probing — then an SCPH-30003R hung the same way. Nothing probes DEV9 from the EE any more. |
+| `ps2dev9.irx` gated on ROM generation, the DEV9 relay on DEV9 presence | The two axes only disagree on a phat *with* an adapter, so the relay started without its driver and the IOP returned `-200`. Reproducing it in PCSX2 needs `EthEnable = true` under `[DEV9/Eth]`; without that the emulator reports DEV9 absent and takes the `intrelay-direct` path. |
 | `intrelay` and `smaprpc` loaded from `host:` | PCSX2 resolves `host:` to the directory the ELF came from, so both quietly succeeded. On a console booted from USB there is no `host:` at all. `intrelay` is now embedded in the ELF; `smaprpc` no longer exists anywhere and its entry is gone. |
 | `CDDA_Exit()` hangs the boot | It issues a *blocking* `SifCallRpc` waiting for an SMSCDVD acknowledgement that never arrives. Needs a real IOP that declines to answer. Skipped at all three call sites — the `SifIopReset()` that follows each discards the module regardless. |
 | EROM driver failure raised a blocking error screen | Only reachable when `rom1` is present, which the first test BIOS lacked. DVD-Video is optional and now degrades to a log line. |

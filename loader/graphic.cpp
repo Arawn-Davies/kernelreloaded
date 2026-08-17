@@ -14,7 +14,10 @@
 #include "configuration.h"
 #include "kprint.h"
 #include "nvram.h"
+#include "bootlog.h"
+#include "font.h"
 #include "modules.h"
+#include "ps2dev9.h"
 #include "loadermenu.h"
 #include <string.h>
 #include <screenshot.h>
@@ -53,6 +56,8 @@ static GSGLOBAL *gsGlobal = NULL;
 /** Colours used for painting. */
 static u64 White, Black, Blue, Red;
 
+static void paintBootLog(void);
+
 /** Text colour. */
 static u64 TexCol;
 
@@ -75,6 +80,11 @@ static u64 TexInfo;
 /** Font used for printing text. */
 static GSFONTM *gsFont;
 
+GSFONTM *getGsFont(void)
+{
+	return gsFont;
+}
+
 /** File name that is printed on screen. */
 static char loadName[26];
 
@@ -82,6 +92,17 @@ static const char *statusMessage = NULL;
 
 /** Percentage for loading file shown as progress bar. */
 static int loadPercentage = 0;
+
+/* The window of the overall bar that the current stage occupies.
+ *
+ * Every loader reports 0..100 for the file it is reading, so the bar used to
+ * restart for each one -- modules, then SBIOS, then the kernel, then the initrd,
+ * four sweeps that say nothing about how far the boot as a whole has got. The
+ * stage maps that per-file percentage into a slice of the bar instead, so it
+ * fills once from empty to full across the whole boot. Callers are unchanged;
+ * only loader.c needs to say which slice it is in. */
+static int stageBase = 0;
+static int stageSpan = 100;
 
 /** Scale factor for font.
  *
@@ -123,7 +144,6 @@ static GSTEXTURE *texUnselected = NULL;
 
 static GSTEXTURE *texPenguin = NULL;
 
-static GSTEXTURE *texDisc = NULL;
 
 static GSTEXTURE *texStarfield = NULL;
 
@@ -151,6 +171,33 @@ static GSTEXTURE *texBarFill = NULL;
  * from Height minus this. Raised from 42 to clear the 34px button bar that now
  * occupies the bottom edge, which the hints would otherwise be drawn over. */
 static int reservedEndOfDisplayY = 72;
+
+/** Baseline for the status / filename line.
+ *
+ * The title lockup is drawn at y=24 and is 74px tall, so it occupies down to
+ * y=98. The old value of 90 put the status text INSIDE it -- "Copying files and
+ * start..." printed across "PlayStation 2 Linux Loader". Sits below the lockup
+ * now, where a menu heading would be, so it reads as the current activity. */
+static const int STATUS_LINE_Y = 108;
+
+/** Top of the loading bar.
+ *
+ * Clears the status line above it rather than sitting under its descenders,
+ * which is what a bar at 120 did to "host:initrd_clean.gz". */
+static const int BAR_Y = 138;
+
+/** Width of the loading bar.
+ *
+ * Matches the column printTextBlock wraps to, so the bar, the status line and
+ * any wrapped text share one left and right edge. The artwork is 260px and is
+ * stretched to fit. */
+static const int BAR_W = 540;
+
+/* During the load the bar moves to the bottom centre, macOS-style, so it does
+ * not sit across the boot log. Narrower than BAR_W because it is centred and
+ * has nothing to line up with on the left. */
+static const int LOAD_BAR_W = 400;
+static const int LOAD_BAR_Y = 380;
 
 static bool usePad = false;
 
@@ -239,6 +286,10 @@ static void applyVideoMode(GSGLOBAL *g, int modeIndex)
 
 	switch (mode) {
 	case GS_MODE_PAL:
+		/* FIELD, not FRAME. FRAME was tried to stop static text shimmering and
+		 * is wrong here: the display reads the buffer at half vertical
+		 * resolution and stretches it, so the whole UI came out squashed to the
+		 * top half of the screen. The shimmer is the price of interlace. */
 		g->Interlace = GS_INTERLACED;
 		g->Field = GS_FIELD;
 		g->Width = 640;
@@ -325,6 +376,29 @@ void check_screen_offsets(void)
  * chunking -- which also retires the buggy gsKit_texture_upload_inline()
  * helper whose lastMem/lastVram cache was never actually assigned.
  */
+/* Same draw with the texture modulated by a brightness level.
+ *
+ * gsKit multiplies the texture by the vertex colour, where 0x80 is 1.0 -- so
+ * the scale runs past unmodified: 0x40 is half, 0xC0 is one and a half. Both
+ * ends are used by the button bar, which reads washed out at 1.0 against the
+ * starfield and should be plainly dead during a load. */
+#define SHADE_DIM    0x40
+#define SHADE_BRIGHT 0xC0
+
+static void paintTextureShaded(GSTEXTURE *tex, int x, int y, int z, u8 level)
+{
+	if (tex == NULL) {
+		return;
+	}
+
+	gsKit_TexManager_bind(gsGlobal, tex);
+
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0, x + tex->Width, y + tex->Height,
+		tex->Width, tex->Height, z,
+		GS_SETREG_RGBAQ(level, level, level, 0x80, 0x00));
+}
+
 void paintTexture(GSTEXTURE *tex, int x, int y, int z)
 {
 	if (tex == NULL) {
@@ -360,6 +434,54 @@ static void paintTexturePartial(GSTEXTURE *tex, int x, int y, int z, int width)
 		GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00));
 }
 
+/** Draw a texture stretched to a given width.
+ *
+ * The bar artwork is 260px wide and was drawn at native size, which is under
+ * half the usable width of the screen. Stretching is free -- the GS scales
+ * while sampling, and gsKit_prim_sprite_texture already takes independent
+ * source and destination rectangles. */
+static void paintTextureStretched(GSTEXTURE *tex, int x, int y, int z, int width)
+{
+	if (tex == NULL) {
+		return;
+	}
+	gsKit_TexManager_bind(gsGlobal, tex);
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0,
+		x + width, y + tex->Height,
+		tex->Width, tex->Height, z,
+		GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
+}
+
+/** As above, revealed to a percentage.
+ *
+ * Source and destination are clipped by the SAME fraction, so the fill's
+ * gradient stays in step with the track instead of being squashed into
+ * whatever is revealed. */
+static void paintTextureStretchedPartial(GSTEXTURE *tex, int x, int y, int z, int width, int percent)
+{
+	int dw;
+	int sw;
+
+	if ((tex == NULL) || (percent <= 0)) {
+		return;
+	}
+	if (percent > 100) {
+		percent = 100;
+	}
+	dw = (width * percent) / 100;
+	sw = ((int) tex->Width * percent) / 100;
+	if (sw <= 0) {
+		return;
+	}
+	gsKit_TexManager_bind(gsGlobal, tex);
+	gsKit_prim_sprite_texture(gsGlobal, tex,
+		x, y, 0, 0,
+		x + dw, y + tex->Height,
+		sw, tex->Height, z,
+		GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
+}
+
 static char infoBuffer[MAX_INFO_BUFFER];
 static int infoBufferPos = 0;
 
@@ -368,81 +490,87 @@ static int writeable = 0;
 static int cursor_counter = 0;
 static int cursorpos = 0;
 
-int printTextBlock(int x, int y, int z, int maxCharsPerLine, int maxY, const char *msg, int scrollPos, int cursorpos, int cursor)
+int printTextBlock(int x, int y, int z, int maxWidth, int maxY, const char *msg, int scrollPos, int cursorpos, int cursor)
 {
-	char lineBuffer[maxCharsPerLine + 1]; /* + 1 for cursor */
-	int i;
+	/* Wraps on MEASURED width rather than a character count.
+	 *
+	 * The old signature took maxCharsPerLine and every caller passed 26, which
+	 * is the only honest answer when the font is fixed-pitch and unmeasurable:
+	 * 26 of the widest character had to fit. With a proportional face that
+	 * wastes most of a line on ordinary text and still overruns on a line full
+	 * of capitals. Now a line is filled until the next glyph would cross
+	 * maxWidth, so it uses the room it actually has. */
+	char lineBuffer[256];
 	int pos;
-	int lastSpace;
-	int lastSpacePos;
 	int lineNo;
-	int insertCursorPos;
+	const int lineStep = fontLineHeight(FONT_BODY) + 6;
 
 	pos = 0;
 	lineNo = 0;
 	do {
-		i = 0;
-		lastSpace = -1;
-		lastSpacePos = 0;
-		insertCursorPos = -1;
+		int i = 0;
+		int w = 0;
+		int lastSpace = -1;
+		int lastSpacePos = 0;
+		int insertCursorPos = -1;
+
 		if (pos == cursorpos) {
-			if (pos == 0) {
-				insertCursorPos = i;
-			}
+			insertCursorPos = 0;
 		}
-		while (i < maxCharsPerLine) {
-			lineBuffer[i] = msg[pos];
-			if (msg[pos] == 0) {
+
+		while (i < (int) sizeof(lineBuffer) - 2) {
+			char c = msg[pos];
+			int adv;
+
+			if (c == 0) {
 				lastSpace = i;
 				lastSpacePos = pos;
 				break;
-			} else if (msg[pos] == '\r') {
-				lineBuffer[i] = 0;
-				lastSpace = i;
-				lastSpacePos = pos + 1;
-			} else if (msg[pos] == '\n') {
-				lineBuffer[i] = 0;
+			}
+			if (c == '\r') {
+				pos++;
+				continue;
+			}
+			if (c == '\n') {
 				lastSpace = i;
 				lastSpacePos = pos + 1;
 				pos++;
 				break;
 			}
-			if (i >= (maxCharsPerLine - 1)) {
-				if (msg[pos] == ' ') {
-					/* Last character is a space, show it at the beginning of the next line. */
-					lastSpace = i;
-					lastSpacePos = pos;
-				}
+
+			/* One character at a time: measuring the remaining string per
+			 * character would be quadratic on a long kernel command line. */
+			adv = fontCharWidth(c, FONT_BODY);
+			if ((w + adv) > maxWidth) {
 				break;
 			}
-			if (msg[pos] == ' ') {
-				/* Current character is a space. */
+
+			if (c == ' ') {
 				lastSpace = i;
 				lastSpacePos = pos + 1;
-				i++;
-			} else if (msg[pos] == '\r') {
-				/* ignore */
-			} else {
-				i++;
 			}
+			lineBuffer[i] = c;
+			i++;
+			w += adv;
 			pos++;
 			if (pos == cursorpos) {
 				insertCursorPos = i;
 			}
 		}
+
 		if (lastSpace >= 0) {
+			/* Break at the last space so words stay whole. */
 			pos = lastSpacePos;
 		} else {
-			/* No whitespace in current line, cut off at last character in line. */
+			/* Nothing to break on -- a single unbroken run longer than the
+			 * line, such as a device path. Cut it. */
 			lastSpace = i;
 		}
 		lineBuffer[lastSpace] = 0;
+
 		if ((insertCursorPos >= 0) && (lastSpace >= insertCursorPos)) {
-			char *a;
 			char *c;
 
-			a = &lineBuffer[insertCursorPos + 1],
-			c = &lineBuffer[lastSpace];
 			for (c = &lineBuffer[lastSpace]; c >= &lineBuffer[insertCursorPos]; c--) {
 				c[1] = c[0];
 			}
@@ -454,19 +582,15 @@ int printTextBlock(int x, int y, int z, int maxCharsPerLine, int maxY, const cha
 		}
 
 		if (lineNo >= scrollPos) {
-#if 0
-			kprintf("Test pos %d i %d lastSpacePos %d %s\n", pos, i, lastSpacePos, lineBuffer);
-#else
-			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + x, yoffset + y, z, scale, TexCol,
-				lineBuffer);
-#endif
-			y += 30;
-			if (y > (maxY - 30)) {
+			fontPrint(xoffset + x, yoffset + y, z, TexCol, lineBuffer, FONT_BODY);
+			y += lineStep;
+			if (y > (maxY - lineStep)) {
 				break;
 			}
 		}
 		lineNo++;
-	} while(msg[pos] != 0);
+	} while (msg[pos] != 0);
+
 	if (lineNo < scrollPos) {
 		return lineNo;
 	} else {
@@ -501,10 +625,117 @@ void graphic_common(void)
 	 * inside the 640px safe area. */
 	paintTexture(texTitle, xoffset + 140, yoffset + 24, 2);
 
-	/* Full-width, anchored to the bottom edge. */
+	/* Full-width, anchored to the bottom edge. Dimmed during the load, when
+	 * none of the buttons it advertises are live. */
 	if (texBottomBar != NULL) {
-		paintTexture(texBottomBar, xoffset,
-			gsGlobal->Height - texBottomBar->Height, 2);
+		const int by = gsGlobal->Height - texBottomBar->Height;
+
+		paintTextureShaded(texBottomBar, xoffset, by, 2,
+			bootlogActive() ? SHADE_DIM : SHADE_BRIGHT);
+
+		/* instantBoot only (not every bootlogActive() boot): the System Info
+		 * panel below is replaced by the boot log for both, but the bottom
+		 * bar has room for a condensed one-line summary of it precisely
+		 * because instant boot has no button prompts to dim it for in the
+		 * first place -- see loader.h's own comment on why this needs its
+		 * own persistent flag rather than reading autoBootTime here (by this
+		 * point it has already been renormalized back to 0).
+		 *
+		 * Model and ROM version only, not the full panel's derived
+		 * chassis/region/adapter/HDD fields -- those are computed from
+		 * locals scoped to the System Info block below, and duplicating that
+		 * logic here is not worth it for a summary line. */
+		if (bootlogActive() && loaderConfig.instantBoot) {
+			/* Same derivation as the System Info panel below (Model/Chassis/
+			 * ROM/Region/Adapter/HDD/IP), kept in its own statics rather
+			 * than shared with the panel's: the panel's copy is scoped
+			 * inside the "not bootlogActive()" branch and this runs only in
+			 * the opposite one, so the two are never live at the same time,
+			 * but sharing one set of statics across two structurally
+			 * separate blocks was worse than the duplicated lines it would
+			 * have saved. Network/DVD-Video/Loader are left off -- a
+			 * bottom-bar summary line does not have room for all ten fields
+			 * regardless, and those three are the least identity-relevant
+			 * for a one-line-glance. */
+			static char chassis[24];
+			static const char *region = "unknown";
+			static const char *adapter = "...";
+			static const char *hdd = "...";
+			static char builtFrom[64];
+			static int builtDev9 = -2;
+			static char ipbuf[24];
+			char info[192];
+
+			const int dev9hw = ps2dev9_probed();
+			if ((strcmp(builtFrom, ps2_console_type) != 0) || (dev9hw != builtDev9)) {
+				snprintf(builtFrom, sizeof(builtFrom), "%s", ps2_console_type);
+				builtDev9 = dev9hw;
+
+				switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
+				case 'J': region = "Japan";     break;
+				case 'A': region = "USA";       break;
+				case 'E': region = "Europe";    break;
+				case 'C': region = "China";     break;
+				case 'H': region = "Asia";      break;
+				case 'K': region = "Korea";     break;
+				case 'R': region = "Russia";    break;
+				default:  region = "unknown";   break;
+				}
+
+				snprintf(chassis, sizeof(chassis), "%s %s",
+					isSlimModel() ? "slim" : "fat", getModelFamily());
+
+				if (isSlimModel()) {
+					adapter = "built-in";
+					hdd = "no";
+				} else if (dev9hw < 0) {
+					adapter = "...";
+					hdd = "...";
+				} else {
+					adapter = (dev9hw == 0x30) ? "Exp. bay" :
+						(dev9hw == 0x20) ? "PCMCIA" : "none";
+					hdd = (dev9hw == 0x30) ? "yes" : "no";
+				}
+			}
+
+			/* Same "parse ip= out of the kernel command line, fall back to
+			 * getMyIP()" as the panel's own IP row -- see its comment on why
+			 * getMyIP() alone is not trustworthy (it is kernelloader's own
+			 * ps2link setting, not what Linux will actually use). */
+			const char *ip = NULL;
+			const char *cmdline = getKernelParameter();
+			const char *f = cmdline;
+
+			while ((f != NULL) && (*f != 0)) {
+				if ((strncmp(f, "ip=", 3) == 0)
+					&& ((f == cmdline) || (f[-1] == ' '))) {
+					unsigned int n = 0;
+
+					f += 3;
+					while ((f[n] != 0) && (f[n] != ':') && (f[n] != ' ')
+						&& (n < (sizeof(ipbuf) - 1))) {
+						ipbuf[n] = f[n];
+						n++;
+					}
+					ipbuf[n] = 0;
+					if (n > 0) {
+						ip = ipbuf;
+					}
+					break;
+				}
+				f = strchr(f, ' ');
+				if (f != NULL) {
+					f++;
+				}
+			}
+
+			snprintf(info, sizeof(info),
+				"Model %s  Chassis %s  ROM %s  Region %s  Adapter %s  HDD %s  IP %s",
+				ps2_console_type, chassis, ps2_rom_version, region, adapter, hdd,
+				(ip != NULL) ? ip : getMyIP());
+			fontPrint(xoffset + 12, by + (texBottomBar->Height - fontLineHeight(FONT_PANEL)) / 2,
+				3, TexInfo, info, FONT_PANEL);
+		}
 	}
 
 	/* System Info panel.
@@ -521,50 +752,125 @@ void graphic_common(void)
 	 * gsKit_fontm offers no way to measure a rendered string, so right-aligning
 	 * the values (as the mockup does) is not possible until there is a glyph
 	 * atlas with an advance-width table. */
-	if (texPanel != NULL) {
+	if (bootlogActive()) {
+		/* The boot has left the menu, so the System Info panel is gone and the
+		 * log takes the screen. What is on it now is what the loader is doing;
+		 * what the console is are answers the user already had time to read. */
+		paintBootLog();
+	} else if (texPanel != NULL) {
 		int px = xoffset + 400;
-		int py = yoffset + 200;
-		int row = py + 40;
+		/* Up from 200: the panel grew to ten rows with Chassis/Adapter/HDD and
+		 * its lower edge reached the progress bar at LOAD_BAR_Y. */
+		int py = yoffset + 140;
+		int row = py + 8 + fontLineHeight(FONT_PANEL) + 8;
 
 		paintTexture(texPanel, px, py, 2);
 
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 14, py + 14, 3, 0.5,
-			TexPanelHead, "System Info");
+		/* Heading centred on the panel rather than pinned to a guessed
+		 * column, which needs a string width -- the thing gsKit_fontm could
+		 * not give us. */
+		fontPrintCentred(px + (texPanel->Width / 2), py + 8, 3,
+			TexPanelHead, "System Info", FONT_PANEL);
 
+		/* Labels left, values RIGHT-ALIGNED to the panel's inner edge, as the
+		 * mockup has them. The old code put values at a fixed x=88 and hoped:
+		 * that is why "DVD-Video" had to become "DVD-V", because at the longer
+		 * label the value collided with it and rendered as "DVD-Videono". */
+/* The value is clipped to whatever the label leaves, so a long one -- a full
+ * ROM version is 14 characters -- truncates with an ellipsis instead of
+ * running backwards into the label. */
 #define PANEL_ROW(label, value) \
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 14, row, 3, 0.42, \
-			TexInfo, (label)); \
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, px + 88, row, 3, 0.42, \
-			TexInfo, (value)); \
-		row += 17
+		fontPrint(px + 12, row, 3, TexInfo, (label), FONT_PANEL); \
+		{ \
+			int lw = fontMeasure((label), FONT_PANEL); \
+			int avail = texPanel->Width - 24 - lw - 8; \
+			int vw = fontMeasure((value), FONT_PANEL); \
+			if (vw > avail) { \
+				fontPrintClipped(px + 12 + lw + 8, row, 3, TexInfo, (value), avail, FONT_PANEL); \
+			} else { \
+				fontPrintRight(px + texPanel->Width - 12, row, 3, TexInfo, (value), FONT_PANEL); \
+			} \
+		} \
+		row += fontLineHeight(FONT_PANEL) + 2
 
 		{
-			/* Name the region rather than showing raw NVRAM bytes.
+			/* Derived once, not per frame.
 			 *
-			 * ps2_region_type is "S%02x T%02x F%02x R%02x (%d NVM errors)",
-			 * which is diagnostic detail for the Versions menu, not something
-			 * to read at a glance -- and it overran the panel.
+			 * All of this is fixed for the life of the boot -- the console does
+			 * not change model, chassis or region while the menu is up -- yet
+			 * it was recomputed on every repaint: a strlen and a switch, two
+			 * calls into modelGeneration() (each a strstr plus a ROM version
+			 * read), and an snprintf, sixty times a second.
 			 *
-			 * ROMVER carries the region as a letter at index 4 ("0160EC..."
-			 * -> 'E'), which is the same source region detection falls back to
-			 * in modules.c and is more dependable than NVRAM. The raw bytes are
-			 * still available under Advanced Menu -> Versions. */
-			const char *region;
+			 * Rebuilt only when an input actually changes. Two do, once each:
+			 * ps2_console_type is empty until nvram_init() fills it, and the
+			 * DEV9 answer arrives later still, during startModules().
+			 *
+			 * NOTHING here probes. On those early frames, before the model
+			 * string exists, modelGeneration() falls back to the ROM version
+			 * and a slim reads as a fat -- which would take the fat branch and
+			 * read the DEV9 revision register, which hangs a slim dead. Only
+			 * what the probe has already answered from where it was safe to
+			 * ask is shown; until then, "...".
+			 *
+			 * "HDD" reports the IDE PORT, not a fitted drive: an expansion bay
+			 * carries one, PCMCIA does not, and a slim has no bay at all. */
+			static char chassis[24];
+			static const char *region = "unknown";
+			static const char *adapter = "...";
+			static const char *hdd = "...";
+			static char builtFrom[64];
+			static int builtDev9 = -2;
 
-			switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
-			case 'J': region = "Japan";     break;
-			case 'A': region = "USA";       break;
-			case 'E': region = "Europe";    break;
-			case 'C': region = "China";     break;
-			case 'H': region = "Asia";      break;
-			case 'K': region = "Korea";     break;
-			case 'R': region = "Russia";    break;
-			default:  region = "unknown";   break;
+			const int dev9hw = ps2dev9_probed();
+			/* Keyed on the model string's CONTENT, not merely on it being
+			 * non-empty. It holds an earlier value before nvram_init() settles
+			 * it, so a presence test latches whatever was there first -- which
+			 * cached a SCPH-70004 as "fat 10K" while nvram_init's own log line
+			 * said slim 70K. A strcmp per frame is nothing beside the strstr,
+			 * ROM read and snprintf it guards. */
+			if ((strcmp(builtFrom, ps2_console_type) != 0) || (dev9hw != builtDev9)) {
+				snprintf(builtFrom, sizeof(builtFrom), "%s", ps2_console_type);
+				builtDev9 = dev9hw;
+
+				/* Region from ROMVER's letter at index 4 ("0160EC..." -> 'E'),
+				 * the same source modules.c falls back to and more dependable
+				 * than NVRAM. ps2_region_type holds the raw bytes and is
+				 * diagnostic detail for the Versions menu, not something to
+				 * read at a glance -- and it overran the panel. */
+				switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
+				case 'J': region = "Japan";     break;
+				case 'A': region = "USA";       break;
+				case 'E': region = "Europe";    break;
+				case 'C': region = "China";     break;
+				case 'H': region = "Asia";      break;
+				case 'K': region = "Korea";     break;
+				case 'R': region = "Russia";    break;
+				default:  region = "unknown";   break;
+				}
+
+				snprintf(chassis, sizeof(chassis), "%s %s",
+					isSlimModel() ? "slim" : "fat", getModelFamily());
+
+				if (isSlimModel()) {
+					adapter = "built-in";
+					hdd = "no";
+				} else if (dev9hw < 0) {
+					adapter = "...";
+					hdd = "...";
+				} else {
+					adapter = (dev9hw == 0x30) ? "Exp. bay" :
+						(dev9hw == 0x20) ? "PCMCIA" : "none";
+					hdd = (dev9hw == 0x30) ? "yes" : "no";
+				}
 			}
 
 			PANEL_ROW("Model", ps2_console_type);
+			PANEL_ROW("Chassis", chassis);
 			PANEL_ROW("ROM", ps2_rom_version);
 			PANEL_ROW("Region", region);
+			PANEL_ROW("Adapter", adapter);
+			PANEL_ROW("HDD", hdd);
 			/* The address Linux will actually use, parsed out of the kernel
 			 * command line's "ip=<client>:<server>:..." -- not getMyIP(), which
 			 * is kernelloader's own ps2link setting and defaults to
@@ -609,26 +915,51 @@ void graphic_common(void)
 			 * than "DVD-Video": the label column is 74px, and the longer text
 			 * ran straight into its own value ("DVD-Videono"). */
 			PANEL_ROW("Network", hasNetworkSupport() ? "yes" : "no");
-			PANEL_ROW("DVD-V", isDVDVSupported() ? "yes" : "no");
-			PANEL_ROW("Loader", LOADER_VERSION);
+			PANEL_ROW("DVD-Video", isDVDVSupported() ? "yes" : "no");
+			/* Version and build identity share one row on purpose. The panel
+			 * already reaches far enough down to have collided with the block
+			 * top right once; an eleventh row would push it further for
+			 * information that fits here. */
+			{
+				static char loaderRow[48];
+
+				if (loaderRow[0] == 0) {
+					snprintf(loaderRow, sizeof(loaderRow), "%s %s",
+						LOADER_VERSION, loaderBuildId);
+				}
+				PANEL_ROW("Loader", loaderRow);
+			}
 		}
 #undef PANEL_ROW
 	}
-	/* The byline used to sit here. It has moved to Advanced Menu -> Versions ->
-	 * Credits: this row is a fixed 640px shared with the hint text on the left,
-	 * and gsKit_fontm gives no way to measure a string, so anything longer than
-	 * about a dozen characters either runs off the right edge or collides with
-	 * the hints. A menu screen has room and does not need to be re-tuned every
-	 * time a name changes. With only the mode and build state left here, the
-	 * block fits back at its original x=490. */
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY - 15, 3, 0.5, TexInfo,
-		modeDescription[currentMode]);
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 490, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.5, TexInfo,
+	/* Video mode and build state, top right.
+	 *
+	 * These used to sit bottom right, above the button bar. That was fine while
+	 * the System Info panel held seven rows, but it now holds ten and reaches
+	 * far enough down that the two blocks overlapped -- "Auto" printed across
+	 * the DVD-Video value and "UNSTABLE" across the loader version, which is
+	 * how the collision was spotted.
+	 *
+	 * Top right is the only place with room that does not have to be re-tuned
+	 * whenever a panel row is added: the title lockup occupies x=140..424 at
+	 * y=24..98, the panel does not start until y=200, and nothing else is drawn
+	 * to the right of the lockup. The bottom edge was never a good home for it
+	 * either -- that strip is shared with the contextual hints on the left and
+	 * the button bar beneath.
+	 *
+	 * Right-aligned to the same x=620 safe-area edge the panel values use, so
+	 * the two blocks share a margin.
+	 *
+	 * (The byline that once lived at the bottom moved to Advanced Menu ->
+	 * Versions -> Credits, where a changing name needs no re-tuning.) */
+	fontPrintRight(xoffset + 620, yoffset + 40, 3, TexInfo,
+		modeDescription[currentMode], FONT_STATUS);
+	fontPrintRight(xoffset + 620, yoffset + 40 + fontLineHeight(FONT_STATUS) + 2, 3, TexInfo,
 		"UNSTABLE"
 #ifdef RTE
 		" RTE"
 #endif
-	);
+		, FONT_STATUS);
 }
 
 /** Paint screen when Auto Boot is in process. */
@@ -642,8 +973,8 @@ void graphic_auto_boot_paint(int time)
 	graphic_common();
 
 	snprintf(msg, sizeof(msg), "Auto Boot in %d seconds.", time);
-	gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-		msg);
+	fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+		msg, FONT_HINT);
 
 	gsKit_queue_exec(gsGlobal);
 	gsKit_finish(); /* Ensure that DMA has been finished before switching screen buffer. */
@@ -654,6 +985,132 @@ void graphic_auto_boot_paint(int time)
 }
 
 /** Paint current state on screen. */
+/* The boot log window.
+ *
+ * Modelled on the SGI ARCS console: a bordered box over the background with
+ * the log inside, top-aligned, oldest line first. Deliberately not a full
+ * screen console -- the loader's own title and progress bar still say what
+ * stage it is at, and the log says what that stage is actually doing.
+ *
+ * Drawn from primitives rather than a texture: it has to work when the failure
+ * being diagnosed might be a texture upload. */
+/* How many characters of s fit in maxw, breaking at a space where there is one.
+ *
+ * Accumulated per character rather than by measuring each candidate prefix,
+ * which would be quadratic in the line length for no better answer -- the
+ * advances are the same either way. */
+static int bootlogFit(const char *s, int maxw)
+{
+	int w = 0;
+	int i = 0;
+	int lastSpace = -1;
+
+	while (s[i] != '\0') {
+		w += fontCharWidth(s[i], FONT_PANEL);
+		if (w > maxw) {
+			break;
+		}
+		if (s[i] == ' ') {
+			lastSpace = i;
+		}
+		i++;
+	}
+	if (s[i] == '\0') {
+		return i;
+	}
+	if (lastSpace > 0) {
+		return lastSpace + 1;
+	}
+	/* No space to break at -- a path or a hex dump. Hard break, but never zero
+	 * characters, or the caller would not advance. */
+	return (i > 0) ? i : 1;
+}
+
+/* Display rows a line needs once wrapped. */
+static int bootlogRows(const char *line, int maxw)
+{
+	int rows = 0;
+
+	while (*line != '\0') {
+		line += bootlogFit(line, maxw);
+		rows++;
+	}
+	return (rows > 0) ? rows : 1;
+}
+
+static void paintBootLog(void)
+{
+	const int x = xoffset + 40;
+	const int y = yoffset + 120;
+	const int w = 560;
+	const int h = 16 + (BOOTLOG_LINES * (fontLineHeight(FONT_PANEL) + 1));
+	int i;
+	int row;
+	int skip;
+
+	/* Border, then the darker field inside it. Two sprites, so the frame is
+	 * whatever is left showing round the edge. */
+	gsKit_prim_sprite(gsGlobal, x, y, x + w, y + h, 2, TexPanelHead);
+	gsKit_prim_sprite(gsGlobal, x + 2, y + 2, x + w - 2, y + h - 2, 3, Black);
+
+	/* Total wrapped rows, so anything past what fits is skipped from the TOP. */
+	{
+		int total = 0;
+
+		for (i = 0; i < bootlogCount(); i++) {
+			const char *l = bootlogLine(i);
+
+			if (l != NULL) {
+				total += bootlogRows(l, w - 16);
+			}
+		}
+		skip = total - BOOTLOG_LINES;
+		if (skip < 0) {
+			skip = 0;
+		}
+	}
+
+	row = y + 8;
+	for (i = 0; i < bootlogCount(); i++) {
+		const char *line = bootlogLine(i);
+
+		if (line == NULL) {
+			break;
+		}
+		/* Wrapped, not clipped. The kernel command line is the case that
+		 * matters: it is the longest thing the loader prints and its tail --
+		 * init=, ip=, root= -- is the part worth reading, which an ellipsis ate.
+		 *
+		 * Wrapping costs rows, so the oldest lines scroll off the top sooner.
+		 * Rows are counted first and the drawing starts far enough in that the
+		 * NEWEST content always lands inside the window; losing the top of a
+		 * long history is the right trade when the last line is the answer. */
+		{
+			const char *p = line;
+
+			while (*p != '\0') {
+				const int n = bootlogFit(p, w - 16);
+
+				if (skip > 0) {
+					skip--;
+				} else if (row < (y + h - 8)) {
+					char seg[BOOTLOG_COLS];
+					int m = n;
+
+					if (m > (int) sizeof(seg) - 1) {
+						m = sizeof(seg) - 1;
+					}
+					memcpy(seg, p, m);
+					seg[m] = '\0';
+					fontPrint(x + 8, row, 4, TexInfo, seg, FONT_PANEL);
+					row += fontLineHeight(FONT_PANEL) + 1;
+				}
+				p += n;
+			}
+		}
+	}
+}
+
 void graphic_paint(void)
 {
 	const char *msg;
@@ -663,86 +1120,116 @@ void graphic_paint(void)
 	}
 	graphic_common();
 
-	if (enableDisc) {
-		paintTexture(texDisc, xoffset + 100, yoffset + 300, 40);
-	}
+	/* The disc sits at 100,300 and the boot log covers that, so it would draw
+	 * straight through the text. It says nothing the log does not. */
+	/* One progress bar, bottom centre, with what is being read in small text
+	 * above it -- the shape of a macOS startup.
+	 *
+	 * Used for every load, not only a boot. It is the same information whether
+	 * the loader is reading a kernel or a file the browser asked for, and a bar
+	 * that moves position depending on context is harder to read than one that
+	 * does not. At FONT_TITLE across the top it also collided with the boot log
+	 * and drew over its first two lines. */
+	if ((statusMessage != NULL) || (loadName[0] != 0)) {
+		const char *what = (statusMessage != NULL) ? statusMessage : loadName;
+		const int bx = xoffset + ((640 - LOAD_BAR_W) / 2);
+		/* A failed boot should be obvious from across the room, so the bar goes
+		 * red and the message sits under it. The full text is in the log window
+		 * above with its "[kloader ERROR]" prefix; this is the summary. */
+		const char *err = getErrorMessage();
 
-	if (statusMessage != NULL) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 90, 3, scale, TexCol,
-			statusMessage);
-	} else if (loadName[0] != 0) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 90, 3, scale, TexCol,
-			loadName);
-		/* Was a flat white rectangle with a red fill -- high contrast, but it
-		 * predates the starfield background and clashed with everything else.
-		 * Now a rounded track with the title lockup's blue as the fill, the
-		 * fill revealed by UV clipping rather than stretched. */
+		fontPrintCentred(xoffset + 320,
+			yoffset + LOAD_BAR_Y - fontLineHeight(FONT_HINT) - 6,
+			5, TexCol, what, FONT_HINT);
+
+		if (err != NULL) {
+			fontPrintClipped(bx, yoffset + LOAD_BAR_Y + 26, 5, TexRed,
+				err, LOAD_BAR_W, FONT_HINT);
+		}
+
 		if (texBarTrack != NULL) {
-			paintTexture(texBarTrack, xoffset + 50, yoffset + 120, 2);
-			paintTexturePartial(texBarFill, xoffset + 50, yoffset + 120, 3,
-				(texBarFill->Width * loadPercentage) / 100);
+			paintTextureStretched(texBarTrack, bx, yoffset + LOAD_BAR_Y, 4, LOAD_BAR_W);
+			if (err != NULL) {
+				/* Flat red over the track rather than the blue fill texture,
+				 * which has no tint parameter. Full width: the boot is not
+				 * going any further, so how far it got is no longer the point. */
+				gsKit_prim_sprite(gsGlobal, bx + 2, yoffset + LOAD_BAR_Y + 2,
+					bx + LOAD_BAR_W - 2,
+					yoffset + LOAD_BAR_Y + texBarTrack->Height - 2, 5, Red);
+			} else {
+				paintTextureStretchedPartial(texBarFill, bx, yoffset + LOAD_BAR_Y, 5,
+					LOAD_BAR_W, loadPercentage);
+			}
 		} else {
-			gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + 120, xoffset + 50 + 520, yoffset + 140, 2, White);
+			gsKit_prim_sprite(gsGlobal, bx, yoffset + LOAD_BAR_Y,
+				bx + LOAD_BAR_W, yoffset + LOAD_BAR_Y + 20, 4, White);
 			if (loadPercentage > 0) {
-				gsKit_prim_sprite(gsGlobal, xoffset + 50, yoffset + 120,
-					xoffset + 50 + (520 * loadPercentage) / 100, yoffset + 140, 2, Red);
+				gsKit_prim_sprite(gsGlobal, bx, yoffset + LOAD_BAR_Y,
+					bx + (LOAD_BAR_W * loadPercentage) / 100,
+					yoffset + LOAD_BAR_Y + 20, 5, Blue);
 			}
 		}
 	}
 	msg = getErrorMessage();
-	if (msg != NULL) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, yoffset + 170, 3, scale, TexRed,
-			"Error Message:");
-		printTextBlock(50, 230, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, msg, 0, -1, 0);
+	if (bootlogActive()) {
+		/* The log window occupies this space, and error_printf() already
+		 * kprintf()s every message with a "[kloader ERROR]" prefix -- so the
+		 * error is in the window regardless, with the lines leading up to it.
+		 * The bar above turns red and carries the summary; drawing the old
+		 * overlay as well put red text straight across the log. */
+	} else if (msg != NULL) {
+		fontPrint(xoffset + 50, yoffset + 170, 3, TexRed,
+			"Error Message:", FONT_TITLE);
+		printTextBlock(50, 230, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, msg, 0, -1, 0);
 	} else {
 		if (!isInfoBufferEmpty()) {
-			scrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, infoBuffer, scrollPos, -1, 0);
+			scrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, infoBuffer, scrollPos, -1, 0);
 		} else {
 			if (inputBuffer != NULL) {
-				inputScrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 26, gsGlobal->Height - reservedEndOfDisplayY, inputBuffer, inputScrollPos, writeable ? cursorpos : -1, writeable && (cursor_counter < (getModeFrequenzy()/2)));
+				inputScrollPos = printTextBlock(xoffset + 50, yoffset + 170, 3, 540, gsGlobal->Height - reservedEndOfDisplayY, inputBuffer, inputScrollPos, writeable ? cursorpos : -1, writeable && (cursor_counter < (getModeFrequenzy()/2)));
 			} else if (menu != NULL) {
 				menu->paint();
 			}
 		}
 	}
 	if (enableDisc) {
-		gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-			"Loading, please wait...");
+		fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+			"Loading, please wait...", FONT_HINT);
 	} else {
 		if (msg != NULL) {
 			if (usePad) {
-				gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-					"Press CROSS to continue.");
+				fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+					"Press CROSS to continue.", FONT_HINT);
 			}
 		} else {
 			if (!isInfoBufferEmpty()) {
 				if (usePad) {
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-						"Press CROSS to continue.");
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-						"Use UP and DOWN to scroll.");
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+						"Press CROSS to continue.", FONT_HINT);
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+						"Use UP and DOWN to scroll.", FONT_HINT);
 				}
 			} else {
 				if (inputBuffer != NULL) {
 					if (writeable) {
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-							"Please use USB keyboard.");
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+							"Please use USB keyboard.", FONT_HINT);
 					}
-					gsKit_fontm_print_scaled(gsGlobal, gsFont, 50, xoffset + gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-						"Press CROSS to quit.");
+					fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+						"Press CROSS to quit.", FONT_HINT);
 				} else if (menu != NULL) {
 					if (usePad) {
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-							"Press CROSS to select menu.");
-						gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + 18, 3, 0.55, TexInfo,
-							"Use UP and DOWN to scroll.");
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+							"Press CROSS to select menu.", FONT_HINT);
+						fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY + fontLineHeight(FONT_HINT) + 2, 3, TexInfo,
+							"Use UP and DOWN to scroll.", FONT_HINT);
 					}
 				}
 			}
 		}
 		if (!usePad) {
-			gsKit_fontm_print_scaled(gsGlobal, gsFont, xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, 0.55, TexInfo,
-				"Please wait...");
+			fontPrint(xoffset + 50, gsGlobal->Height - reservedEndOfDisplayY, 3, TexInfo,
+				"Please wait...", FONT_HINT);
 		}
 	}
 	gsKit_queue_exec(gsGlobal);
@@ -765,6 +1252,15 @@ extern "C" {
 	 * @param percentage Percentage to set (0 - 100).
 	 * @param name File name printed on screen.
 	 */
+	void graphic_repaint(void) {
+		graphic_paint();
+	}
+
+	void graphic_setLoadStage(int base, int span) {
+		stageBase = base;
+		stageSpan = span;
+	}
+
 	void graphic_setPercentage(int percentage, const char *name) {
 		if (percentage > 100) {
 			percentage = 100;
@@ -783,6 +1279,11 @@ extern "C" {
 		 * paths that need this most. The loaders pass the same pointer on
 		 * every iteration, which is what this is guarding. */
 		static const char *lastName = (const char *) -1;
+
+		/* Into the current stage's slice of the bar. With the default 0/100
+		 * window this is the identity, so a caller outside a boot -- the file
+		 * browser, say -- behaves exactly as before. */
+		percentage = stageBase + ((percentage * stageSpan) / 100);
 
 		if (percentage == loadPercentage && name == lastName) {
 			return;
@@ -829,6 +1330,11 @@ extern "C" {
 		statusMessage = text;
 		graphic_paint();
 	}
+}
+
+GSGLOBAL *getGsGlobal(void)
+{
+	return gsGlobal;
 }
 
 GSTEXTURE *getTexture(const char *filename)
@@ -988,14 +1494,28 @@ Menu *graphic_main(void)
 	}
 
 	gsFont->Spacing = 0.8f;
+
+	/* The atlas font. gsKit_fontm stays for now so anything not yet ported keeps
+	 * drawing, but everything positioned relative to something else -- centred,
+	 * right-aligned, or clipped to a box -- goes through font.c, because those
+	 * need a string width and gsKit_fontm cannot supply one. */
+	fontInit();
 	texFolder = getTexture("folder.rgb");
 	texUp = getTexture("up.rgb");
 	texBack = getTexture("back.rgb");
 	texSelected = getTexture("selected.rgb");
 	texUnselected = getTexture("unselected.rgb");
 	texPenguin = getTexture("penguin.rgb");
-	texDisc = getTexture("disc.rgb");
+#ifdef NO_BACKDROP
+	/* VRAM bisect aid (make NO_BACKDROP=1). The 731x512 backdrop is 1.5MB of
+	 * the 4MB of VRAM once gsKit rounds its buffer width up to 768, which is
+	 * what pushes a PAL 640x512 double-buffered display over the limit. Leave
+	 * it unloaded to test that; everything else draws as usual. */
+	texStarfield = NULL;
+	kprintf("graphic: NO_BACKDROP build, starfield not uploaded\n");
+#else
 	texStarfield = getTexture("starfield.rgb");
+#endif
 	texTitle = getTexture("title.rgb");
 	texBottomBar = getTexture("bottombar.rgb");
 	texPanel = getTexture("panel.rgb");
@@ -1417,6 +1937,7 @@ extern "C" {
 		}
 
 		/* Fresh font object for the new GSGLOBAL, mirroring graphic_main(). */
+		fontReset();
 		gsFont = gsKit_init_fontm();
 		if (gsKit_fontm_upload(gsGlobal, gsFont) != 0) {
 			kprintf("Can't find any font to use\n");
@@ -1430,7 +1951,6 @@ extern "C" {
 		reallocTexture(texSelected);
 		reallocTexture(texUnselected);
 		reallocTexture(texPenguin);
-		reallocTexture(texDisc);
 		reallocTexture(texStarfield);
 		reallocTexture(texTitle);
 		reallocTexture(texBottomBar);

@@ -393,3 +393,37 @@ From upstream's `docs/upstream/readme.txt`, and relevant when deciding where to 
   config file at all.
 - `ps2ip.irx` and `ps2smap.irx` are mutually exclusive with Linux's own network
   driver; if the IOP tries to use the network the system hangs.
+
+Found the hard way, on hardware, on 2026-08-16:
+
+**The DEV9 revision register must never be read from the EE on a slim PSTwo.**
+`DEV9_REG(DEV9_R_REV)` hangs the console dead — not slowly, not returning
+nonsense — and it does so wherever in the boot it is read: cold during module
+buffering, after `ps2dev9.irx` has started on the IOP, or from the paint path.
+It was reached all three ways before the cause was understood, because **PCSX2
+answers 0 and carries on**, so nothing about it is visible under emulation.
+
+Upstream never reads it on a slim either. `ps2dev9_init()` is called from the
+non-slim branch of `real_loader()`, guarded by `enableDev9 && hasNetworkSupport()`.
+That is the correct design rather than an oversight: a slim has the adapter
+built in, so the chassis genuinely does imply presence, and only a fat is
+ambiguous — CXD9611 expansion bay, CXD9566 PCMCIA card, or, for most of them,
+neither. So `dev9Matches()` in `loader.c` probes a fat and assumes a slim, and
+the System Info panel shows only what the probe has already answered from
+somewhere safe, never asking itself.
+
+The known gap: a 75K/79K had the SPEED chip removed and wants
+`intrelay-direct-rpc`, but nothing readable from the EE distinguishes it from a
+70K. That is upstream's behaviour today too, so this is no worse — it would
+need the ROM version to discriminate.
+
+Two consequences worth remembering when adding anything that touches DEV9:
+
+- The paint path runs before `nvram_init()` fills `ps2_console_type`, so
+  `modelGeneration()` falls back to the ROM version and **a slim reads as a fat
+  on those first frames**. Any "if fat, probe" written in a draw function will
+  therefore probe on a slim.
+- Assuming DEV9 on a slim is right for a console and wrong under an emulator
+  with none configured, where the IOP refuses `smaprpc` with `-200`. That is why
+  `smaprpc` is `.optional`: only networking is lost, and a queued error would
+  otherwise strand the boot on a pad prompt at Buffer check.

@@ -112,6 +112,7 @@ loader/disc.h
 loader/folder.h
 loader/highlight.h
 loader/panel.h
+loader/glyphs.h
 loader/penguin.h
 loader/selected.h
 loader/starfield.h
@@ -132,6 +133,7 @@ loader/highlight.png
 loader/panel.png
 loader/penguin.png
 loader/starfield.png
+loader/glyphs.png
 loader/title.png
 
 # Kernel and initrd dropped in for boot testing. These are BlackRhino release
@@ -144,3 +146,7 @@ loader/title.png
 # Downloaded BlackRhino Live DVD and the DISC.BIN extracted from it. Fetched by
 # tools/get-blackrhino-disc.sh; large, and not ours to redistribute.
 dist/blackrhino-live/
+
+# Generated on every build by loader/Makefile: names the tree the ELF came
+# from. Never tracked -- it would conflict on every single build.
+loader/buildstamp.c

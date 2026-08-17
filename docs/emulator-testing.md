@@ -495,7 +495,44 @@ names (`vmlinux_old.gz`, `vmlinux_new.gz`), never case variants.
 re-execs; the real process is reparented away from the wrapper, its argv
 no longer contains the AppImage name, and its `comm` is truncated to 15
 characters. `timeout`, `pkill -f <appimage>` and `pkill -x pcsx2-qt` all
-fail to reap it. Use `tools/killpcsx2.sh`.
+fail to reap it — and `pkill -x` reports success while killing nothing,
+which is worse than failing. `pkill -f` matches the caller's own command
+line and kills the shell instead. One AppImage is also two PIDs, so
+killing "the" process leaves the other looking like a fresh instance.
+
+Use `tools/pcsx2/emu.sh` — `status`, `kill`, `run <appimage> [args]`. It
+matches on argv read from `/proc`, never on `comm`; excludes itself by
+PID and by name (its own path contains "pcsx2", which is exactly how the
+naive version killed its own shell); and refuses to launch while an
+instance is already up, because two of them sharing one config directory
+and one `emulog.txt` produce interleaved output that reads like a single
+confused boot.
+
+---
+
+## A passing emulator run can hide a hardware hang
+
+The direction that costs the most time is not PCSX2 failing where hardware
+works. It is PCSX2 **succeeding** where hardware hangs, because nothing
+prompts you to look.
+
+The case that proved it: reading the DEV9 revision register from the EE.
+PCSX2 answers 0 and carries on; a slim PSTwo stops dead. Six hardware
+boots went into narrowing a fault that no amount of emulator testing could
+ever have surfaced. See "Hardware notes worth knowing" in
+`kernelloader-internals.md`.
+
+The general shape is worth recognising. Anything that reads a hardware
+register the emulator does not model will read as a benign zero here, so a
+clean PCSX2 run is evidence about the *code path*, never about whether the
+access is safe. Register reads added for probing or diagnostics deserve a
+hardware boot of their own before being believed.
+
+The reverse trap also exists, and bit us the same night: assuming DEV9 is
+present because a slim always has it is right on a console and wrong under
+PCSX2, where the IOP refuses `smaprpc` with `-200`. Configure
+`EnableDev9=0` in the emulator's `config.txt` to get the selection a
+console without the adapter would take.
 
 ---
 

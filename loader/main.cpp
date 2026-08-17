@@ -3,6 +3,7 @@
 #include <gsFontM.h>
 #include <libcdvd.h>
 
+#include "bootlog.h"
 #include "config.h"
 #include "graphic.h"
 #include "loader.h"
@@ -73,6 +74,19 @@ int main(int argc, char **argv)
 	int emulatedKey;
 	register int sp asm("sp");
 
+#ifdef INSTANT_BOOT_DEFAULT
+	/* Earliest possible point, full stop: before crc32check(), before any
+	 * module loads, before config.txt can be read at all. This is what a
+	 * build-time flag buys over the AutoBootTime<0 runtime path (see that
+	 * branch's own comment below) -- config.txt itself needs a module or two
+	 * loaded before it is readable on real hardware, so no runtime check can
+	 * ever be earlier than that, on any build. loaderConfig.instantBoot is
+	 * set here too, persistently -- unlike autoBootTime, which stays 0 for
+	 * this whole build and is never the signal for this path. */
+	bootlogBegin();
+	loaderConfig.instantBoot = 1;
+#endif
+
 	/* The .crc32 section is patched by crc32gen at build time, so a mismatch
 	 * means the ELF changed after that ran -- a damaged copy on the card, or
 	 * a hand-edited binary. "Download it again" is only useful advice to
@@ -97,6 +111,10 @@ int main(int argc, char **argv)
 	}
 
 
+	/* First thing in the log, so a photograph of a hung screen still says which
+	 * build is hung -- the ring buffer holds the last 16 lines, but this also
+	 * goes to the panel's Loader row, which does not scroll. */
+	kprintf("kloader " LOADER_VERSION " (%s)\n", loaderBuildStamp);
 	sio_printf("kloader started\n");
 
 	if (debug_mode == -1) {
@@ -130,9 +148,59 @@ int main(int argc, char **argv)
 	/* Disable debug output at startup. */
 	loaderConfig.enableEEDebug = 0;
 
-	/* Setup graphic screen. */
+	/* Setup graphic screen. graphic_main() still builds one root Menu
+	 * object (needed for gsGlobal/font/texture bring-up either way, see its
+	 * own comment) but that object is never populated or shown below in the
+	 * INSTANT_BOOT_DEFAULT build -- only initMenu() does that, and this
+	 * build never calls it. */
 	menu = graphic_main();
 
+#ifdef INSTANT_BOOT_DEFAULT
+	/* No menu is ever shown or navigated in this build -- config.txt's
+	 * AutoBootTime is always -1 for it (see PS2KLoad::Stage()'s own
+	 * comment) so the interactive countdown/menu loop below never runs
+	 * either way. Skip building it at all: registerLoaderConfigItems()
+	 * alone is what config.txt parsing (modules.c's loadConfiguration())
+	 * actually needs, and boots straight through to loader() once modules
+	 * are up. */
+	registerLoaderConfigItems();
+
+	/* Not cosmetic: populates romver/ps2_rom_version, which nvram.c's
+	 * getBiosVersion() callers use for console-generation/region detection
+	 * during module loading below. The normal build runs this before
+	 * initMenu() for the same reason -- ps2_rom_version's Versions-menu
+	 * display is incidental, not the point. */
+	checkROMVersion();
+
+	loadLoaderModules(debug_mode, disable_cdrom);
+
+	if (do_default_sbios_calls) {
+		defaultSBIOSCalls(NULL);
+	}
+
+	initializeController();
+
+	PS2KbdInit();
+
+	kprintf("argc %d\n", argc);
+	for (i = 0; i < argc; i++) {
+		kprintf("argv[%d] = %s\n", i, argv[i]);
+	}
+
+	loader(NULL);
+
+	/* loader() only returns on failure -- a successful boot jumps into the
+	 * kernel and never comes back here. There is no menu tree in this build
+	 * to fall back into (that is the whole point of INSTANT_BOOT_DEFAULT),
+	 * so unlike the normal build below, this halts here instead: the
+	 * bootlog panel already has the last kprintf() naming what went wrong,
+	 * and kload is host-driven (PCSX2/WhiteRhino), not a person at a pad
+	 * who could navigate a recovery menu anyway. */
+	kprintf("loader() failed, halting.\n");
+	while (1) {
+		graphic_paint();
+	}
+#else
 	lastValidMenu = menu;
 
 	/* Disable menu until start up. */
@@ -168,7 +236,23 @@ int main(int argc, char **argv)
 		kprintf("argv[%d] = %s\n", i, argv[i]);
 	}
 
-	if (loaderConfig.autoBootTime > 0) {
+	if (loaderConfig.autoBootTime < 0) {
+		/* Instant boot: AutoBootTime > 0's loop below cannot reach zero
+		 * visible countdown frames -- graphic_auto_boot_paint() and the
+		 * elapsed check share one loop, so the first frame always paints --
+		 * so this bypasses that loop entirely instead of trying to make it
+		 * draw zero frames.
+		 *
+		 * Renormalize to a valid, in-bounds value first. autoBootText[] /
+		 * MenuMultiSelectionEntry (menuEntry.h) index this same field
+		 * directly with no bounds check, for the Advanced menu's "Auto
+		 * Boot" entry, and a negative value would otherwise stay set for
+		 * the rest of the program's run. */
+		loaderConfig.autoBootTime = 0;
+		setCurrentMenu(NULL);
+		menu->execute();
+		setCurrentMenu(menu);
+	} else if (loaderConfig.autoBootTime > 0) {
 		int refreshCounter = 0;
 		char key;
 
@@ -460,6 +544,7 @@ int main(int argc, char **argv)
 		}
 
 	} while (1);
+#endif /* INSTANT_BOOT_DEFAULT */
 
 	/* not reached! */
 	return 0;
