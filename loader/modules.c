@@ -20,6 +20,7 @@
 
 #include "modules.h"
 #include "graphic.h"
+#include "bootlog.h"
 #include "loader.h"
 #include "rom.h"
 #include "eedebug.h"
@@ -572,6 +573,22 @@ int loadLoaderModules(int debug_mode, int disable_cdrom)
 
 			/* Load configuration on startup and not on IOP reset. */
 			moduleList[i].loadCfg = 0;
+
+			/* Earliest point loaderConfig.autoBootTime can be known for this
+			 * (normal) build -- config.txt is read here, in this loop, and
+			 * not before. On real hardware even the host: fallback is only
+			 * reached after the mc0:/mc1: attempts above it, which need
+			 * MCMAN/MCSERV (loaded two entries up moduleList[]) to be
+			 * meaningful at all. INSTANT_BOOT_DEFAULT builds (main.cpp) skip
+			 * this dependency entirely by not needing config.txt in the
+			 * first place; this is the fallback for a normal kloader.elf
+			 * whose config.txt sets AutoBootTime=-1 (kload's -kload-instant
+			 * always writes it, belt-and-suspenders, even though the
+			 * instant-build variant does not need it). */
+			if (loaderConfig.autoBootTime < 0 && !bootlogActive()) {
+				bootlogBegin();
+				loaderConfig.instantBoot = 1;
+			}
 		}
 		graphic_setStatusMessage(moduleList[i].path);
 		kprintf("Loading module (%s)\n", moduleList[i].path);

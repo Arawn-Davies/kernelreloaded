@@ -2325,8 +2325,17 @@ static int real_loader(void)
 		/* Check for errors in ELF file. */
 		/* From here the menu is gone and the screen is the loader's own progress.
 	 * Swap the System Info panel for the boot log: what the loader is doing now
-	 * matters more than what the console is. */
-	bootlogBegin();
+	 * matters more than what the console is.
+	 *
+	 * Guarded: instant boot (main.cpp, AutoBootTime < 0) already turned this
+	 * on before real_loader() was ever reached, covering SBIOS calls and
+	 * controller/keyboard init too, not just from here. Calling it again
+	 * would be harmless -- bootlogBegin() only sets a flag -- but the point
+	 * is one continuous panel for that path, not two activations of the
+	 * same one. */
+	if (!bootlogActive()) {
+		bootlogBegin();
+	}
 
 	graphic_setStatusMessage("Checking Kernel...");
 		if (check_sections("kernel", buffer, kernel_size, 0x10000, lowestAddress, &highest, NULL) != 0) {

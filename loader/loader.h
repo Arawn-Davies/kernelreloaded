@@ -73,6 +73,16 @@ extern "C" {
 		int enableEEDebug;
 		int autoBootTime;
 		int patchLibsd;
+		/* Persistent record of "this boot took the instant path", set once
+		 * in main.cpp and never cleared -- unlike autoBootTime itself, which
+		 * main.cpp normalizes back to 0 immediately after consuming the
+		 * negative instant-boot sentinel (see its own comment: the field is
+		 * indexed with no bounds check by the Advanced menu's "Auto Boot"
+		 * entry, so a negative value cannot be left sitting in it). graphic.cpp
+		 * needs a way to know it was instant *after* that normalization, to
+		 * condense the System Info panel onto the bottom bar instead of
+		 * hiding it outright -- see paintBootLog()'s caller. */
+		int instantBoot;
 	} loader_config_t;
 
 	extern loader_config_t loaderConfig;

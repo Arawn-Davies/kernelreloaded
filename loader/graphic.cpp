@@ -632,6 +632,110 @@ void graphic_common(void)
 
 		paintTextureShaded(texBottomBar, xoffset, by, 2,
 			bootlogActive() ? SHADE_DIM : SHADE_BRIGHT);
+
+		/* instantBoot only (not every bootlogActive() boot): the System Info
+		 * panel below is replaced by the boot log for both, but the bottom
+		 * bar has room for a condensed one-line summary of it precisely
+		 * because instant boot has no button prompts to dim it for in the
+		 * first place -- see loader.h's own comment on why this needs its
+		 * own persistent flag rather than reading autoBootTime here (by this
+		 * point it has already been renormalized back to 0).
+		 *
+		 * Model and ROM version only, not the full panel's derived
+		 * chassis/region/adapter/HDD fields -- those are computed from
+		 * locals scoped to the System Info block below, and duplicating that
+		 * logic here is not worth it for a summary line. */
+		if (bootlogActive() && loaderConfig.instantBoot) {
+			/* Same derivation as the System Info panel below (Model/Chassis/
+			 * ROM/Region/Adapter/HDD/IP), kept in its own statics rather
+			 * than shared with the panel's: the panel's copy is scoped
+			 * inside the "not bootlogActive()" branch and this runs only in
+			 * the opposite one, so the two are never live at the same time,
+			 * but sharing one set of statics across two structurally
+			 * separate blocks was worse than the duplicated lines it would
+			 * have saved. Network/DVD-Video/Loader are left off -- a
+			 * bottom-bar summary line does not have room for all ten fields
+			 * regardless, and those three are the least identity-relevant
+			 * for a one-line-glance. */
+			static char chassis[24];
+			static const char *region = "unknown";
+			static const char *adapter = "...";
+			static const char *hdd = "...";
+			static char builtFrom[64];
+			static int builtDev9 = -2;
+			static char ipbuf[24];
+			char info[192];
+
+			const int dev9hw = ps2dev9_probed();
+			if ((strcmp(builtFrom, ps2_console_type) != 0) || (dev9hw != builtDev9)) {
+				snprintf(builtFrom, sizeof(builtFrom), "%s", ps2_console_type);
+				builtDev9 = dev9hw;
+
+				switch ((strlen(ps2_rom_version) > 4) ? ps2_rom_version[4] : 0) {
+				case 'J': region = "Japan";     break;
+				case 'A': region = "USA";       break;
+				case 'E': region = "Europe";    break;
+				case 'C': region = "China";     break;
+				case 'H': region = "Asia";      break;
+				case 'K': region = "Korea";     break;
+				case 'R': region = "Russia";    break;
+				default:  region = "unknown";   break;
+				}
+
+				snprintf(chassis, sizeof(chassis), "%s %s",
+					isSlimModel() ? "slim" : "fat", getModelFamily());
+
+				if (isSlimModel()) {
+					adapter = "built-in";
+					hdd = "no";
+				} else if (dev9hw < 0) {
+					adapter = "...";
+					hdd = "...";
+				} else {
+					adapter = (dev9hw == 0x30) ? "Exp. bay" :
+						(dev9hw == 0x20) ? "PCMCIA" : "none";
+					hdd = (dev9hw == 0x30) ? "yes" : "no";
+				}
+			}
+
+			/* Same "parse ip= out of the kernel command line, fall back to
+			 * getMyIP()" as the panel's own IP row -- see its comment on why
+			 * getMyIP() alone is not trustworthy (it is kernelloader's own
+			 * ps2link setting, not what Linux will actually use). */
+			const char *ip = NULL;
+			const char *cmdline = getKernelParameter();
+			const char *f = cmdline;
+
+			while ((f != NULL) && (*f != 0)) {
+				if ((strncmp(f, "ip=", 3) == 0)
+					&& ((f == cmdline) || (f[-1] == ' '))) {
+					unsigned int n = 0;
+
+					f += 3;
+					while ((f[n] != 0) && (f[n] != ':') && (f[n] != ' ')
+						&& (n < (sizeof(ipbuf) - 1))) {
+						ipbuf[n] = f[n];
+						n++;
+					}
+					ipbuf[n] = 0;
+					if (n > 0) {
+						ip = ipbuf;
+					}
+					break;
+				}
+				f = strchr(f, ' ');
+				if (f != NULL) {
+					f++;
+				}
+			}
+
+			snprintf(info, sizeof(info),
+				"Model %s  Chassis %s  ROM %s  Region %s  Adapter %s  HDD %s  IP %s",
+				ps2_console_type, chassis, ps2_rom_version, region, adapter, hdd,
+				(ip != NULL) ? ip : getMyIP());
+			fontPrint(xoffset + 12, by + (texBottomBar->Height - fontLineHeight(FONT_PANEL)) / 2,
+				3, TexInfo, info, FONT_PANEL);
+		}
 	}
 
 	/* System Info panel.

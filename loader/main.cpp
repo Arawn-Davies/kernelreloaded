@@ -3,6 +3,7 @@
 #include <gsFontM.h>
 #include <libcdvd.h>
 
+#include "bootlog.h"
 #include "config.h"
 #include "graphic.h"
 #include "loader.h"
@@ -72,6 +73,19 @@ int main(int argc, char **argv)
 	int refreshesPerSecond;
 	int emulatedKey;
 	register int sp asm("sp");
+
+#ifdef INSTANT_BOOT_DEFAULT
+	/* Earliest possible point, full stop: before crc32check(), before any
+	 * module loads, before config.txt can be read at all. This is what a
+	 * build-time flag buys over the AutoBootTime<0 runtime path (see that
+	 * branch's own comment below) -- config.txt itself needs a module or two
+	 * loaded before it is readable on real hardware, so no runtime check can
+	 * ever be earlier than that, on any build. loaderConfig.instantBoot is
+	 * set here too, persistently -- unlike autoBootTime, which stays 0 for
+	 * this whole build and is never the signal for this path. */
+	bootlogBegin();
+	loaderConfig.instantBoot = 1;
+#endif
 
 	/* The .crc32 section is patched by crc32gen at build time, so a mismatch
 	 * means the ELF changed after that ran -- a damaged copy on the card, or
@@ -172,7 +186,23 @@ int main(int argc, char **argv)
 		kprintf("argv[%d] = %s\n", i, argv[i]);
 	}
 
-	if (loaderConfig.autoBootTime > 0) {
+	if (loaderConfig.autoBootTime < 0) {
+		/* Instant boot: AutoBootTime > 0's loop below cannot reach zero
+		 * visible countdown frames -- graphic_auto_boot_paint() and the
+		 * elapsed check share one loop, so the first frame always paints --
+		 * so this bypasses that loop entirely instead of trying to make it
+		 * draw zero frames.
+		 *
+		 * Renormalize to a valid, in-bounds value first. autoBootText[] /
+		 * MenuMultiSelectionEntry (menuEntry.h) index this same field
+		 * directly with no bounds check, for the Advanced menu's "Auto
+		 * Boot" entry, and a negative value would otherwise stay set for
+		 * the rest of the program's run. */
+		loaderConfig.autoBootTime = 0;
+		setCurrentMenu(NULL);
+		menu->execute();
+		setCurrentMenu(menu);
+	} else if (loaderConfig.autoBootTime > 0) {
 		int refreshCounter = 0;
 		char key;
 

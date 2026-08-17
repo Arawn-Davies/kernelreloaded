@@ -94,6 +94,10 @@ ifneq ($(FAKE_EXTRA_RAM),)
 EE_FLAGS += -DFAKE_MAXMEM_MB=$(FAKE_EXTRA_RAM)
 endif
 
+ifneq ($(INSTANT_BOOT_DEFAULT),)
+EE_FLAGS += -DINSTANT_BOOT_DEFAULT
+endif
+
 EE_CFLAGS += $(EE_FLAGS) -Wimplicit-int -Werror-implicit-function-declaration
 
 # buildstamp.c names the tree this ELF was built from. build.sh writes it
