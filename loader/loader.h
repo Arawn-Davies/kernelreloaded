@@ -83,6 +83,18 @@ extern "C" {
 		 * condense the System Info panel onto the bottom bar instead of
 		 * hiding it outright -- see paintBootLog()'s caller. */
 		int instantBoot;
+		/* Overrides FAKE_MAXMEM_MB/the retail 32MB default when set, to the
+		 * fixed 128MB T10K devkit layout size. Nothing on this console can
+		 * know for itself whether "more than 32MB" is really backed by
+		 * memory or just claimed -- FAKE_MAXMEM_MB is a build-time guess for
+		 * exactly that reason. A caller that already knows the true answer
+		 * (PCSX2/WhiteRhino reading its own ExtraMemory setting, in
+		 * particular) can say so here instead of this loader guessing, via
+		 * config.txt's EnableExtraMem=1 -- same shape as EnableDev9, and for
+		 * the same reason: a boolean the caller sets, not a number it has to
+		 * get exactly right. See loader.c's use of it, next to
+		 * FAKE_MAXMEM_MB. */
+		int enableExtraMem;
 	} loader_config_t;
 
 	extern loader_config_t loaderConfig;

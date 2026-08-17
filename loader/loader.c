@@ -2247,6 +2247,17 @@ static int real_loader(void)
 		bootpage.bootinfo.maxmem = 128 * 1024 * 1024;
 	} else {
 		bootpage.bootinfo.mach_type = PS2_BOOTINFO_MACHTYPE_PS2;
+		if (loaderConfig.enableExtraMem) {
+			/* config.txt's EnableExtraMem, from a caller that actually knows
+			 * the answer -- see loaderConfig.enableExtraMem's own comment in
+			 * loader.h. Takes priority over the compile-time guess below: a
+			 * caller that says so has checked, where FAKE_MAXMEM_MB has not.
+			 * Fixed at 128MB, the T10K devkit layout size PCSX2's
+			 * ExtraMemory=true actually maps -- same value the IsT10K()
+			 * branch above uses for real T10K hardware. */
+			bootpage.bootinfo.maxmem = 128 * 1024 * 1024 - 4096;
+			kprintf("MEMORY: using 128MB (config.txt EnableExtraMem)\n");
+		}
 #ifdef FAKE_MAXMEM_MB
 		/* Deliberate lie, for emulation only. prom.c does
 		 *     add_memory_region(0, ps2_bootinfo->maxmem & PAGE_MASK, ...)
@@ -2257,12 +2268,18 @@ static int real_loader(void)
 		 * 128MB T10K devkit layout.
 		 *
 		 * Opt-in via FAKE_EXTRA_RAM in config.mk so a normal build cannot
-		 * carry it onto hardware by accident. */
-		bootpage.bootinfo.maxmem = FAKE_MAXMEM_MB * 1024 * 1024 - 4096;
-		kprintf("MEMORY: claiming %dMB (FAKE_MAXMEM_MB) -- needs real backing\n",
-			FAKE_MAXMEM_MB);
+		 * carry it onto hardware by accident. Skipped when EnableExtraMem
+		 * already set bootinfo.maxmem above -- a caller who checked beats
+		 * this guess. */
+		else {
+			bootpage.bootinfo.maxmem = FAKE_MAXMEM_MB * 1024 * 1024 - 4096;
+			kprintf("MEMORY: claiming %dMB (FAKE_MAXMEM_MB) -- needs real backing\n",
+				FAKE_MAXMEM_MB);
+		}
 #else
-		bootpage.bootinfo.maxmem = 32 * 1024 * 1024 - 4096;
+		else {
+			bootpage.bootinfo.maxmem = 32 * 1024 * 1024 - 4096;
+		}
 #endif
 	}
 

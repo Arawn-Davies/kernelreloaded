@@ -131,6 +131,19 @@ KLOADER_BUILD_DATE ?= $(shell date -u '+%Y-%m-%d %H:%MZ')
 # this diff to what actually breaks.
 EE_CXXFLAGS = $(EE_FLAGS) -D_STLP_NO_NAMESPACES -D_NOTHREADS -D_STLP_NO_EXCEPTIONS -D_STLP_USE_NEWALLOC -D_STLP_HAS_WCHAR_T -D_STLP_NO_IOSTREAMS
 
+# Per-function/per-variable sections plus a linker GC pass. kloader-instant.elf
+# (INSTANT_BOOT_DEFAULT=1) never calls initMenu() -- see main.cpp -- so the
+# ~300 lines of Menu/MenuEntry widget construction and callbacks it alone
+# reaches (mcLoadConfig, editString, fsroot, the SBIOS-calls submenu, ...)
+# become unreachable from that build's main(). Without this, the linker keeps
+# them anyway: it links whole .o files, not individual functions, so
+# loadermenu.o's unused half rides along regardless of whether anything calls
+# it. The normal kloader.elf still calls initMenu(), so nothing is actually
+# removed there -- this only pays off for the instant build.
+EE_CFLAGS += -ffunction-sections -fdata-sections
+EE_CXXFLAGS += -ffunction-sections -fdata-sections
+EE_LDFLAGS += -Wl,--gc-sections
+
 # ps2link.irx and ps2smap.irx are absent from this list because modern ps2sdk
 # ships neither. ps2link moved out of ps2sdk into its own project
 # (ps2dev/ps2link); ps2smap.irx was renamed and restructured -- the SMAP driver
@@ -241,7 +254,14 @@ clean:
 	rm -f romfilelist.h romdefinitions.h rominitialize.h
 	rm -f $(RGB_HEADERS) $(RGB_FILES)
 	rm -f $(PACKEDFILE)
-	rm -f $(ROM_FILES)
+	# defaultconfig.txt is hand-written source (git-tracked), not a generated
+	# ROM component, despite living in ROM_FILES alongside ones that are --
+	# it just also gets embedded. A plain `rm -f $(ROM_FILES)` deleted it on
+	# every clean, which only ever went unnoticed because a stale
+	# defaultconfig_txt.o from before the last time this file existed kept
+	# masking the loss. Confirmed the hard way: `git status` showed it
+	# deleted after nothing more than `./build.sh clean`.
+	rm -f $(filter-out defaultconfig.txt,$(ROM_FILES))
 	rm -f $(addsuffix .s,$(subst .,_,$(ROM_FILES)))
 	rm -f $(addsuffix .o,$(subst .,_,$(ROM_FILES)))
 	rm -rf .depend
