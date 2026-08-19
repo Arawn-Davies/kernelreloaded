@@ -6,5 +6,5 @@
 	url = https://github.com/Arawn-Davies/ps2facts.git
 [submodule "whiterhino"]
 	path = whiterhino
-	url = https://github.com/Arawn-Davies/pcsx2-whiterhino.git
+	url = https://github.com/Arawn-Davies/whiterhino.git
 	branch = whiterhino
