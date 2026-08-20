@@ -163,7 +163,10 @@ fi
 echo
 if [ -f "${BIN}/kloader.elf" ]; then
     echo "[✓] bin/kloader.elf — copy this one to mc0:/mc1:/mass0:"
-    ls -l --block-size=K "${BIN}/kloader.elf" | sed 's/^/    /'
+    # -h (human-readable), not GNU's --block-size=K: BSD ls (macOS host) does
+    # not understand the long-option form and set -e turns that into a hard
+    # failure right after printing success -- caught building on macOS.
+    ls -lh "${BIN}/kloader.elf" | sed 's/^/    /'
     if ls "${BIN}"/debug/*.elf >/dev/null 2>&1; then
         echo
         echo "    bin/debug/ — build intermediates, not for deployment:"

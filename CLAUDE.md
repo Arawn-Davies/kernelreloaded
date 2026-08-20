@@ -189,6 +189,14 @@ What works, as of 2026-08-16:
 - **Boot to a shell takes about 19 seconds** under emulation, down from 61.
 - **The loader shows its own log on screen** during the load, so a hang has a
   named last line instead of a frozen picture. See "Debugging on hardware".
+- **`linux/phase2/` (the gcc 15-ported kernel, as opposed to phase1's period
+  gcc 2.95.2 build) also boots to interactive `bash`, since 2026-08-20** —
+  via WhiteRhino's kload, user-confirmed. Four real gcc-15-port bugs stood in
+  the way, all in the fork/syscall/uaccess machinery, none in kernel logic;
+  see `linux/phase2/README.md`'s "Boot bugs, found and fixed" for the full
+  writeup. `bash` itself execs and runs, but the console it reads from
+  currently delivers keystrokes one at a time instead of a full line —
+  open, not yet root-caused, see that same README's "Not yet done".
 
 Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel
 and initrd have to be loaded from `host:` or a card. See the end of
@@ -208,7 +216,10 @@ Open, unstarted: a mode change that the display cannot sync to leaves a black
 screen with no way back (`gsKit_init_screen()` is applied with no confirmation
 or timeout — it wants the monitor-style revert-after-N-seconds); and there is no
 DHCP, so the System Info panel's IP row shows `getMyIP()`'s 192.168.0.10 default
-rather than a real lease.
+rather than a real lease. Under WhiteRhino specifically: guest-triggered
+`reboot`/`restart` resets straight to normal BIOS/CDVD boot rather than
+re-running the same kload boot (same kernel, initrd, cmdline) it started
+with — needs a hook in `whiterhino`'s own reset path, not this repo.
 
 ## Debugging on hardware
 
