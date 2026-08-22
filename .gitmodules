@@ -8,3 +8,6 @@
 	path = whiterhino
 	url = https://github.com/Arawn-Davies/whiterhino.git
 	branch = whiterhino
+[submodule "netbsd"]
+	path = netbsd
+	url = https://github.com/Arawn-Davies/netbsdps2.git

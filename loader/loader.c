@@ -1343,7 +1343,32 @@ char *load_kernel_file(const char *filename, int *size)
 {
 	char *buffer = NULL;
 	gzFile fin;
-	int maxsize = 6 * 1024 * 1024;
+	/* Upstream's original default was a hardcoded 6MB with no real
+	 * hardware constraint behind it -- the comment beside the retry
+	 * loop below says so outright: "Don't know the size just use 6 MB".
+	 * It's a pre-guess this function needs because it doesn't know the
+	 * decompressed size in advance (unlike load_file() above, which
+	 * takes a known filesize and just does memalign(64, filesize) with
+	 * no ceiling at all). Every PS2 Linux kernel this repo has ever
+	 * loaded stayed comfortably under 4MB, so 6MB never mattered until
+	 * a NetBSD kernel (a fuller-featured, non-stripped RAMDISK build,
+	 * ~8.6MB) hit it: "Error file host:netbsd is too big (free
+	 * 6144kB)." Starting the guess at 32MB (stock console RAM) instead
+	 * lets the existing shrink-by-512KB retry loop discover the real
+	 * ceiling via actual memalign() failures, rather than assuming one.
+	 * If it still can't clear ~9MB even from here, that is a genuine
+	 * constraint worth understanding -- not something to raise blindly
+	 * past.
+	 *
+	 * Testing right now under PCSX2's ExtraMemory=true (128MB T10K
+	 * devkit mapping, see CLAUDE.md's "Pretending to have more RAM") --
+	 * not stock 32MB hardware -- so start the guess at the real ceiling
+	 * that setting actually maps, and let memalign()'s own success/
+	 * failure (via the retry loop) reveal the true available amount,
+	 * same as this whole experiment is meant to do rather than guessing
+	 * again. Whether this is even feasible on real 32MB hardware is a
+	 * separate question for later. */
+	int maxsize = 128 * 1024 * 1024;
 
 	if (size == NULL) {
 		return NULL;

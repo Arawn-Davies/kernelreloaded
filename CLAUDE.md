@@ -51,9 +51,10 @@ on 2026-08-13; the root went from 37 tracked entries to 18.
 | `iop/` | every IOP module: `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader`. Its `Makefile` builds all six; they were four separate `make -C` lines at the root |
 | `include/` | the two headers shared between EE and IOP sides |
 | `linux/` | **submodule** → [`ps2linux`](https://github.com/Arawn-Davies/ps2linux). Everything about the guest OS and nothing about the loader: the Linux patch set, `kernelconfig`, `phase1/` (our from-source kernel build), the three `driver_*` trees |
+| `netbsd/` | **submodule** → [`netbsdps2`](https://github.com/Arawn-Davies/netbsdps2). NetBSD's own `playstation2` port, revived upstream in 2014 but never run against the R5900's real deviations from the generic MIPS III machine description it's built on. `overlay/` carries the finished, known-good files (not patches — see that repo's README for why); `build-kernel.sh` reproduces the whole thing from a pristine checkout on any machine |
 | `ps2facts/` | **submodule** → [`ps2facts`](https://github.com/Arawn-Davies/ps2facts). Asks a console what it is and prints the answers; useful well beyond this project, hence its own repo |
 | `tools/` | host-side helpers: `bin2s` (POSIX sh replacement for a tool modern ps2sdk dropped), `crc32gen`, `png2rgb`, `ppm2rgb`, `hello`, `pcsx2/`, the deploy scripts |
-| `whiterhino/` | **submodule** → [`pcsx2-whiterhino`](https://github.com/Arawn-Davies/pcsx2-whiterhino), branch `whiterhino` (the repo's default; upstream's inherited `master` was dropped, since nothing here tracks it). A PCSX2 fork carrying WhiteRhino: EE TLB/MMU accuracy work, and `kload`/`dload`, two ways to boot PS2 Linux without a real console. `kload` embeds this repo's own `kloader.elf`, built fresh at `whiterhino/`'s build time — see `whiterhino/tools/build-windows.ps1` and `whiterhino/tools/build-kloader-resource.sh` |
+| `whiterhino/` | **submodule** → [`whiterhino`](https://github.com/Arawn-Davies/whiterhino), branch `whiterhino` (the repo's default; upstream's inherited `master` was dropped, since nothing here tracks it). A PCSX2 fork carrying WhiteRhino: EE TLB/MMU accuracy work, and `kload`/`dload`, two ways to boot PS2 Linux without a real console. `kload` embeds this repo's own `kloader.elf`, built fresh at `whiterhino/`'s build time — see `whiterhino/tools/build-windows.ps1` and `whiterhino/tools/build-kloader-resource.sh`. Its EE interpreter has only ever been exercised by Linux guests until `netbsd/` started booting through it — a bug there may be a WhiteRhino gap, not a guest-kernel bug |
 | `assets/` | shipped textures; `assets/src/` holds unshipped source artwork; `assets/mcicons/` the memory-card icon |
 | `docs/` | internals, build-environment, porting-notes; `docs/upstream/` holds upstream's own `readme.txt`, `install.txt`, `history.txt`, `TODO.txt` and `KNOWNPROBLEMS.txt` |
 
@@ -69,20 +70,29 @@ are in the source, and its content survives in history at `708c8ff`.
 a wrapper directory.** `Makefile`, `kernel/`, `TGE/`, `loader/`, `iop/` and
 `include/` are this repo and stay in it.
 
-**`linux/`, `ps2facts/` and `whiterhino/` are the three exceptions, the
-first two added on 2026-08-16 and the third on 2026-08-17.** `ps2facts/` moved
-here from `tools/ps2facts/` on 2026-08-18, to sit next to the other two
-submodules instead of being the one nested a level deeper for no reason other
-than history — it shares their exact status (its own repo, pushed and public)
-and nothing reads it from inside `tools/`. An earlier version
-of this file forbade splitting `linux/` out at all. That was wrong for the
-reason kernelloader itself demonstrates: upstream never tracked a kernel tree
-either — `buildlinux.sh` downloaded the source and patched it, exactly as
-`phase1/build-kernel.sh` still does. Carrying the patch set next to the loader
-was our addition, and it put 8,000 lines of `unitable.h` in a repo whose build
-never reads a byte of it. The objection that mattered — that these pointers
-would reference commits on one machine — does not apply, because all three are
-pushed and public.
+**`linux/`, `ps2facts/`, `whiterhino/` and `netbsd/` are the four exceptions,**
+the first two added on 2026-08-16, the third on 2026-08-17, and `netbsd/` on
+2026-08-22. `ps2facts/` moved here from `tools/ps2facts/` on 2026-08-18, to sit
+next to the other submodules instead of being the one nested a level deeper
+for no reason other than history — it shares their exact status (its own
+repo, pushed and public) and nothing reads it from inside `tools/`. An
+earlier version of this file forbade splitting `linux/` out at all. That was
+wrong for the reason kernelloader itself demonstrates: upstream never tracked
+a kernel tree either — `buildlinux.sh` downloaded the source and patched it,
+exactly as `phase1/build-kernel.sh` still does. Carrying the patch set next
+to the loader was our addition, and it put 8,000 lines of `unitable.h` in a
+repo whose build never reads a byte of it. The objection that mattered — that
+these pointers would reference commits on one machine — does not apply,
+because all four are pushed and public.
+
+**`netbsd/` deliberately does *not* repeat `linux/`'s patch-file approach.**
+A `.patch` applied at build time can fail to apply on a machine that pulled a
+slightly different pristine checkout — exactly what happened once already
+with `linux/`, and precisely the kind of failure that strands a fresh Claude
+session (or a human) with no way to tell whether the fix is wrong or just the
+apply step. `netbsd/overlay/` instead carries the finished files themselves,
+copied straight over a pristine checkout by one script — a plain file copy
+can't fail to apply. See that repo's own README for the full reasoning.
 
 `whiterhino/` is not this project's build target — `./build.sh` never reads it,
 same as `linux/` — but it is the one submodule that reads *this* repo's own
@@ -197,6 +207,18 @@ What works, as of 2026-08-16:
   writeup. `bash` itself execs and runs, but the console it reads from
   currently delivers keystrokes one at a time instead of a full line —
   open, not yet root-caused, see that same README's "Not yet done".
+- **`netbsd/`, since 2026-08-22: the kernel links and boots past its first
+  two real blockers**, but does not yet reach a shell. NetBSD's own
+  `playstation2` port had never been run against the R5900's actual
+  deviations from the generic MIPS III machine description it's built on —
+  see `netbsd/README.md`'s "Bugs found and fixed" for the full list (32-bit-
+  only COP0, single-precision-only FPU, a cache geometry the generic runtime
+  probe can't express, EE INTC/DMAC interrupt wiring never connected to the
+  generic `mips_splsw` framework). Currently stuck on a new, distinct,
+  not-yet-root-caused issue: the general-exception vector's copied bytes
+  don't match its source at runtime, suspected D-cache/instruction-fetch
+  coherency gap either in the cache-index addressing or in WhiteRhino's own
+  emulation — see that README's "Status" for what's been ruled in/out so far.
 
 Known not to work: `cdfs:` cannot read the PS2 Linux Live DVD, so its kernel
 and initrd have to be loaded from `host:` or a card. See the end of
