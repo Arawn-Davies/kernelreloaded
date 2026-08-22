@@ -100,9 +100,9 @@ directly, and the modern-toolchain patch that used to be applied at build time
 is simply part of it. That patch's final form survives in history at `708c8ff`
 if you want to see the delta against pristine upstream in one piece.
 
-(`linux/`, `ps2facts/` and `whiterhino/` *are* submodules, added later for a
-different reason and pointing at repositories that actually exist. See
-Layout.)
+(`linux/`, `ps2facts/`, `whiterhino/` and `netbsd/` *are* submodules, added
+later for a different reason and pointing at repositories that actually
+exist. See Layout.)
 
 Upstream is dead: last commit **2017-03-01**, release 3.0 from May 2014, no open
 issues, not archived — just abandoned. Of its seven forks, only citronalco's has
@@ -123,13 +123,14 @@ booting PS2 Linux with an NFS root — the same person, twice, a decade apart.
 The kernelloader source *is* this repo — no wrapper directory, so `make` at the
 root just works and there is exactly one source tree for the loader.
 
-Three directories are submodules, because what is in them is useful without
+Four directories are submodules, because what is in them is useful without
 the loader: `linux/` is the guest-OS patch set, `ps2facts/` identifies a
-console, and `whiterhino/` is a PCSX2 fork that embeds this repo's own
-`kloader.elf` for its `kload` boot mode. Clone with `--recurse-submodules`, or
+console, `whiterhino/` is a PCSX2 fork that embeds this repo's own
+`kloader.elf` for its `kload` boot mode, and `netbsd/` carries the R5900
+fixes for NetBSD's `playstation2` port. Clone with `--recurse-submodules`, or
 run `git submodule update --init` afterwards. `./build.sh` reads none of them,
-so forgetting one costs you the kernel build, the fact-finder or the emulator
-fork — never the loader.
+so forgetting one costs you the kernel build, the fact-finder, the emulator
+fork or the NetBSD build — never the loader.
 
 | Path | What it is |
 |---|---|
@@ -140,8 +141,9 @@ fork — never the loader.
 | `iop/` | the six IOP modules — `sharedmem`, `smaprpc`, `dev9init`, `SMSUTILS`, `SMSCDVD`, `eromdrvloader` |
 | `include/` | the two headers shared between the EE and IOP sides |
 | `linux/` | **submodule → [ps2linux](https://github.com/Arawn-Davies/ps2linux)** — everything about the **guest OS**: upstream's patch set, the `kernelconfig`, `phase1/` (building the kernel from source), the out-of-tree `driver_*` trees |
+| `netbsd/` | **submodule → [netbsdps2](https://github.com/Arawn-Davies/netbsdps2)** — R5900 fixes for NetBSD's own `playstation2` port: a 32-bit-only COP0, a single-precision-only FPU, and a cache geometry the generic MIPS3 probe can't express, none of which NetBSD's generic machine description anticipated |
 | `ps2facts/` | **submodule → [ps2facts](https://github.com/Arawn-Davies/ps2facts)** — asks a console what it is: ROM version, silicon revisions, DEV9, MechaCon, the full ROMDIR, and which IOP modules a loader would pick |
-| `whiterhino/` | **submodule → [pcsx2-whiterhino](https://github.com/Arawn-Davies/pcsx2-whiterhino)** — a PCSX2 fork carrying the EE TLB/MMU fixes below plus `kload`/`dload`, two ways to boot PS2 Linux without a real console |
+| `whiterhino/` | **submodule → [whiterhino](https://github.com/Arawn-Davies/whiterhino)** — a PCSX2 fork carrying the EE TLB/MMU fixes below plus `kload`/`dload`, two ways to boot PS2 Linux without a real console |
 | `tools/` | host-side helpers — `crc32gen`, `png2rgb`, `ppm2rgb`, `bin2s`, the `pcsx2/` patches, deploy scripts |
 | `assets/` | shipped artwork; `assets/src/` holds unshipped sources |
 | `docs/` | the documents above; `docs/upstream/` keeps upstream's own `readme.txt` and friends |
@@ -234,13 +236,21 @@ cost is that Linux sees no HDD and no ethernet on such a console.
 least-exercised path in the emulator and the first thing Linux leans on. Seven
 emulator bugs later it reaches a shell too; the patches, the reasoning and a
 one-command red/green demonstration are in
-[`tools/pcsx2/`](tools/pcsx2/README.md). [`whiterhino/`](https://github.com/Arawn-Davies/pcsx2-whiterhino)
+[`tools/pcsx2/`](tools/pcsx2/README.md). [`whiterhino/`](https://github.com/Arawn-Davies/whiterhino)
 carries those same fixes built in, so testing against it needs no patching.
 
 The kernel is now built from source rather than taken prebuilt — see
 [`linux/phase1/`](linux/phase1/README.md) — which is what made the last of those bugs
 findable, and turned up two in the PS2 Linux kernel itself: the ROM console tty
 had no receive path at all, so every shell read EOF and exited without a word.
+
+**NetBSD is next, and not there yet.** [`netbsd/`](https://github.com/Arawn-Davies/netbsdps2)
+carries the R5900 fixes NetBSD's own `playstation2` port needed — a 32-bit-only
+COP0, a single-precision-only FPU, a cache geometry the generic MIPS3 probe
+can't express, none of which the generic MIPS machine description this port
+is built on anticipated. As of 2026-08-22 the kernel links and boots past its
+first two real blockers under WhiteRhino, but does not yet reach a shell; see
+that repo's own README for the full account and current status.
 
 Getting there turned up faults that had nothing to do with the four
 originally-documented blockers, and two that would have shipped a broken ELF
